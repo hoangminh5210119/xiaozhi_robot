@@ -1,0 +1,1172 @@
+#include "application.h"
+#include "assets/lang_config.h"
+#include "button.h"
+#include "codecs/no_audio_codec.h"
+#include "adc_i2s_audio_codec.h"
+#include "config.h"
+#include "display/oled_display.h"
+#include "dual_network_board.h"
+#include "esp32_camera.h"
+#include "lamp_controller.h"
+#include "led/single_led.h"
+#include "mcp_server.h"
+#include "nmea_parser.h"
+#include "system_reset.h"
+#include "wifi_board.h"
+#include <driver/i2c_master.h>
+#include <esp_lcd_panel_ops.h>
+#include <esp_lcd_panel_vendor.h>
+#include <esp_log.h>
+#include <esp_spiffs.h>
+
+#include "esp_http_client.h"
+#include "esp_log.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+// #include <wifi_station.h>
+#include "telegram_manager.h" // Add this include
+
+#include "RecurringSchedule.h"
+#include "StorageManager.h"
+
+#define TAG "esp32-s3-cam-gps-a7680c"
+
+class Esp32S3CamGpsA7680cBoard : public DualNetworkBoard {
+private:
+  i2c_master_bus_handle_t display_i2c_bus_;
+  esp_lcd_panel_io_handle_t panel_io_ = nullptr;
+  esp_lcd_panel_handle_t panel_ = nullptr;
+  Display *display_ = nullptr;
+  Button capture_button_;
+  Button mode_button_;
+  Button send_button_;
+
+  Esp32Camera *camera_;
+
+  // RecurringSchedule *scheduler_;
+
+  void MountStorage() {
+    // Mount partition "storage" riêng cho lưu trữ dữ liệu người dùng
+    esp_vfs_spiffs_conf_t storage_conf = {
+        .base_path = "/storage",
+        .partition_label = "storage",
+        .max_files = 5,
+        .format_if_mount_failed = true,  // Có thể format nếu cần
+    };
+    esp_err_t ret = esp_vfs_spiffs_register(&storage_conf);
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to mount storage partition (%s)", esp_err_to_name(ret));
+    } else {
+      ESP_LOGI(TAG, "Storage partition mounted at /storage");
+    }
+  }
+
+  void InitializeDisplayI2c() {
+    i2c_master_bus_config_t bus_config = {
+        .i2c_port = (i2c_port_t)0,
+        .sda_io_num = DISPLAY_SDA_PIN,
+        .scl_io_num = DISPLAY_SCL_PIN,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .intr_priority = 0,
+        .trans_queue_depth = 0,
+        .flags =
+            {
+                .enable_internal_pullup = 1,
+            },
+    };
+    ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, &display_i2c_bus_));
+  }
+
+  void InitializeCamera() {
+    camera_config_t config = {};
+    config.pin_d0 = CAMERA_PIN_D0;
+    config.pin_d1 = CAMERA_PIN_D1;
+    config.pin_d2 = CAMERA_PIN_D2;
+    config.pin_d3 = CAMERA_PIN_D3;
+    config.pin_d4 = CAMERA_PIN_D4;
+    config.pin_d5 = CAMERA_PIN_D5;
+    config.pin_d6 = CAMERA_PIN_D6;
+    config.pin_d7 = CAMERA_PIN_D7;
+    config.pin_xclk = CAMERA_PIN_XCLK;
+    config.pin_pclk = CAMERA_PIN_PCLK;
+    config.pin_vsync = CAMERA_PIN_VSYNC;
+    config.pin_href = CAMERA_PIN_HREF;
+    config.pin_sccb_sda = CAMERA_PIN_SIOD;
+    config.pin_sccb_scl = CAMERA_PIN_SIOC;
+    config.sccb_i2c_port = 0;
+    config.pin_pwdn = CAMERA_PIN_PWDN;
+    config.pin_reset = CAMERA_PIN_RESET;
+    config.xclk_freq_hz = XCLK_FREQ_HZ;
+    config.pixel_format = PIXFORMAT_RGB565;
+    config.frame_size = FRAMESIZE_QVGA;
+    config.jpeg_quality = 12;
+    config.fb_count = 1;
+    config.fb_location = CAMERA_FB_IN_PSRAM;
+    config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+    camera_ = new Esp32Camera(config);
+    camera_->SetHMirror(false);
+    camera_->SetVFlip(true);
+  }
+
+  void InitializeSsd1306Display() {
+    // SSD1306 config
+    esp_lcd_panel_io_i2c_config_t io_config = {
+        .dev_addr = 0x3C,
+        .on_color_trans_done = nullptr,
+        .user_ctx = nullptr,
+        .control_phase_bytes = 1,
+        .dc_bit_offset = 6,
+        .lcd_cmd_bits = 8,
+        .lcd_param_bits = 8,
+        .flags =
+            {
+                .dc_low_on_data = 0,
+                .disable_control_phase = 0,
+            },
+        .scl_speed_hz = 400 * 1000,
+    };
+
+    ESP_ERROR_CHECK(
+        esp_lcd_new_panel_io_i2c_v2(display_i2c_bus_, &io_config, &panel_io_));
+
+    ESP_LOGI(TAG, "Install SSD1306 driver");
+    esp_lcd_panel_dev_config_t panel_config = {};
+    panel_config.reset_gpio_num = -1;
+    panel_config.bits_per_pixel = 1;
+
+    esp_lcd_panel_ssd1306_config_t ssd1306_config = {
+        .height = static_cast<uint8_t>(DISPLAY_HEIGHT),
+    };
+    panel_config.vendor_config = &ssd1306_config;
+
+    ESP_ERROR_CHECK(
+        esp_lcd_new_panel_ssd1306(panel_io_, &panel_config, &panel_));
+    ESP_LOGI(TAG, "SSD1306 driver installed");
+
+    // Reset the display
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_));
+    if (esp_lcd_panel_init(panel_) != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to initialize display");
+      display_ = new NoDisplay();
+      return;
+    }
+
+    // Set the display to on
+    ESP_LOGI(TAG, "Turning display on");
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_, true));
+
+    display_ = new OledDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                               DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+  }
+
+  void fetch_reverse_geocode(double lat, double lon) {
+    char url[256];
+    snprintf(
+        url, sizeof(url),
+        "https://nominatim.openstreetmap.org/reverse?format=json&lat=%f&lon=%f",
+        lat, lon);
+
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.cert_pem = NULL;
+    config.method = HTTP_METHOD_GET;
+    config.disable_auto_redirect = false;
+    config.user_agent = "ESP32GeoApp/1.0 (contact: your_email@example.com)";
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+      ESP_LOGE(TAG, "Failed to init http client");
+      return;
+    }
+
+    esp_err_t err = esp_http_client_perform(client);
+    if (err == ESP_OK) {
+      int status = esp_http_client_get_status_code(client);
+      int content_length = esp_http_client_get_content_length(client);
+      ESP_LOGI(TAG, "HTTP GET Status = %d, content_length = %d", status,
+               content_length);
+
+      char buffer[1024];
+      int read_len =
+          esp_http_client_read_response(client, buffer, sizeof(buffer) - 1);
+      if (read_len >= 0) {
+        buffer[read_len] = 0; // null terminate
+        ESP_LOGI(TAG, "Response: %s", buffer);
+
+        // parse JSON (ví dụ lấy địa chỉ display_name)
+        cJSON *root = cJSON_Parse(buffer);
+        if (root) {
+          cJSON *display = cJSON_GetObjectItem(root, "display_name");
+          if (cJSON_IsString(display)) {
+            ESP_LOGI(TAG, "Location: %s", display->valuestring);
+          }
+          cJSON_Delete(root);
+        }
+      } else {
+        ESP_LOGE(TAG, "Failed to read response");
+      }
+    } else {
+      ESP_LOGE(TAG, "HTTP GET request failed: %s", esp_err_to_name(err));
+    }
+
+    esp_http_client_cleanup(client);
+  }
+
+  void InitializeButtons() {
+    capture_button_.OnClick([this]() {
+      ESP_LOGI(TAG, "Capture button clicked - Switching network type (4G <-> WiFi)");
+      auto &app = Application::GetInstance();
+      // Chuyển đổi giữa 4G và WiFi
+      app.Schedule([this]() {
+        SwitchNetworkType();
+        ESP_LOGI(TAG, "Network type switched successfully");
+      });
+    });
+
+    mode_button_.OnClick([this]() {
+      ESP_LOGI(TAG, "Mode button clicked - toggle chat state");
+      auto &app = Application::GetInstance();
+      app.Schedule([this]() {
+        auto &app = Application::GetInstance();
+        app.SendTextCommandToServer("hủy bỏ lịch 1");
+        auto scheduler_ = &RecurringSchedule::GetInstance();
+        scheduler_->removeSchedule(1);
+      });
+    });
+
+    send_button_.OnClick([this]() {
+      ESP_LOGI(TAG, "Send button clicked - toggle chat state");
+
+      auto &app = Application::GetInstance();
+      app.Schedule([this]() {
+        auto &app = Application::GetInstance();
+        app.ToggleChatState();
+      });
+
+      // toggle chat state
+    });
+  }
+
+  void InitializeTools() {
+    static LampController lamp(SOS_LED_PIN);
+    auto &mcp = McpServer::GetInstance();
+    auto &app = Application::GetInstance();
+    auto &telegram = TelegramManager::GetInstance();
+    auto &storage = StorageManager::GetInstance();
+    auto &scheduler = RecurringSchedule::GetInstance();
+
+    // Khởi tạo RecurringSchedule với file path giống StorageManager
+    scheduler.begin("/storage/schedule.json");
+    scheduler.setCallback([&app](int id, const std::string &note) {
+      ESP_LOGI(TAG, "⏰ Schedule triggered: id=%d, note=%s", id, note.c_str());
+      app.SendTextCommandToServer(note);
+    });
+
+    // Khởi tạo StorageManager với 6 ô (0-5)
+    // ⚠️ QUAN TRỌNG: addSlot TRƯỚC, begin() SAU để load dữ liệu vào slots
+    // GPIO_NUM_1 dùng tạm cho test, chưa gắn LED thật
+    storage.addSlot(0, GPIO_NUM_2); // Ô 0
+    storage.addSlot(1, GPIO_NUM_2); // Ô 1  
+    storage.addSlot(2, GPIO_NUM_2); // Ô 2
+    storage.addSlot(3, GPIO_NUM_2); // Ô 3
+    storage.addSlot(4, GPIO_NUM_2); // Ô 4
+    storage.addSlot(5, GPIO_NUM_2); // Ô 5
+    
+    // begin() sẽ auto-load dữ liệu từ file vào các slot đã add
+    if (!storage.begin("/storage/storage.json")) {
+      ESP_LOGW(TAG, "Failed to initialize storage, but continuing...");
+    }
+
+    // ==================== STORAGE MANAGER MCP TOOLS ====================
+    mcp.AddTool(
+        "storage.put_item",
+        "LƯU/ĐẶT đồ vào một ô cụ thể trong tủ.\n"
+        "Dùng khi: Người dùng nói 'tôi để [đồ vật] vào ô số [X]', 'cất [đồ] "
+        "vào ngăn [X]'.\n"
+        "Tham số:\n"
+        "- slot (integer): Số ô (0-5)\n"
+        "- item (string): Tên đồ vật (ví dụ: 'kính', 'chìa khóa', 'ví')\n"
+        "Ví dụ: Người dùng: 'Tôi để kính vào ô số 4' → slot=4, item='kính'\n"
+        "Trả về: true nếu thành công, false nếu ô không tồn tại",
+        PropertyList({Property("slot", kPropertyTypeInteger, 0, 5),
+                      Property("item", kPropertyTypeString)}),
+        [&storage](const PropertyList &props) -> ReturnValue {
+          int slot = props["slot"].value<int>();
+          std::string item = props["item"].value<std::string>();
+          ESP_LOGI(TAG, "📦 Putting '%s' into slot %d", item.c_str(), slot);
+          return storage.putItem(slot, item, true);
+        });
+
+    mcp.AddTool(
+        "storage.take_item",
+        "LẤY đồ ra khỏi một ô (đánh dấu ô trống).\n"
+        "Dùng khi: Người dùng nói 'tôi lấy đồ ở ô [X] ra', 'lấy [đồ] ra'.\n"
+        "Tham số:\n"
+        "- slot (integer): Số ô cần lấy đồ (0-5)\n"
+        "Trả về: true nếu thành công, false nếu ô không tồn tại",
+        PropertyList({Property("slot", kPropertyTypeInteger, 0, 5)}),
+        [&storage](const PropertyList &props) -> ReturnValue {
+          int slot = props["slot"].value<int>();
+          ESP_LOGI(TAG, "📤 Taking item from slot %d", slot);
+          return storage.takeItem(slot, true);
+        });
+
+    mcp.AddTool(
+        "storage.find_item",
+        "TÌM KIẾM đồ vật trong tủ, trả về danh sách các ô chứa đồ đó.\n"
+        "Dùng khi: Người dùng hỏi '[đồ vật] của tôi ở đâu?', 'tìm [đồ]'.\n"
+        "Tham số:\n"
+        "- item (string): Tên đồ vật cần tìm\n"
+        "Ví dụ: 'Kính của tôi ở đâu?' → item='kính'\n"
+        "Trả về: Danh sách số ô chứa đồ đó (JSON array). Nếu không tìm thấy "
+        "→ []",
+        PropertyList({Property("item", kPropertyTypeString)}),
+        [&storage](const PropertyList &props) -> ReturnValue {
+          std::string item = props["item"].value<std::string>();
+          ESP_LOGI(TAG, "🔍 Finding item: %s", item.c_str());
+          auto slots = storage.findItemByName(item);
+
+          // Tạo JSON response
+          cJSON *root = cJSON_CreateObject();
+          cJSON_AddStringToObject(root, "item", item.c_str());
+          cJSON *slotsArray = cJSON_CreateArray();
+          for (int slot : slots) {
+            cJSON_AddItemToArray(slotsArray, cJSON_CreateNumber(slot));
+          }
+          cJSON_AddItemToObject(root, "slots", slotsArray);
+          cJSON_AddNumberToObject(root, "count", slots.size());
+
+          char *jsonStr = cJSON_Print(root);
+          std::string result(jsonStr);
+          cJSON_free(jsonStr);
+          cJSON_Delete(root);
+
+          return result;
+        });
+
+    mcp.AddTool(
+        "storage.led",
+        "ĐIỀU KHIỂN ĐÈN LED của một ô.\n"
+        "Tham số:\n"
+        "- slot (integer): Số ô (0-5)\n"
+        "- action (string): 'on' = bật, 'off' = tắt, 'blink' = nhấp nháy\n"
+        "- times (integer): Số lần nhấp nháy (chỉ dùng khi action='blink', mặc định 3)\n"
+        "- delay_ms (integer): Độ trễ ms (chỉ dùng khi action='blink', mặc định 500)\n"
+        "Trả về: true nếu thành công",
+        PropertyList({Property("slot", kPropertyTypeInteger, 0, 5),
+                      Property("action", kPropertyTypeString),
+                      Property("times", kPropertyTypeInteger, 1, 10),
+                      Property("delay_ms", kPropertyTypeInteger, 100, 2000)}),
+        [&storage](const PropertyList &props) -> ReturnValue {
+          int slot = props["slot"].value<int>();
+          std::string action = props["action"].value<std::string>();
+          
+          if (action == "on") {
+            ESP_LOGI(TAG, "💡 Turning ON LED for slot %d", slot);
+            return storage.turnOnLED(slot);
+          } else if (action == "off") {
+            ESP_LOGI(TAG, "🌑 Turning OFF LED for slot %d", slot);
+            return storage.turnOffLED(slot);
+          } else if (action == "blink") {
+            int times = props["times"].value<int>();
+            int delayMs = props["delay_ms"].value<int>();
+            ESP_LOGI(TAG, "✨ Blinking LED for slot %d, %d times", slot, times);
+            return storage.blinkLED(slot, times, delayMs);
+          }
+          return false;
+        });
+
+    mcp.AddTool(
+        "storage.list_all",
+        "XEM DANH SÁCH tất cả các ô và đồ vật trong tủ.\n"
+        "Dùng khi: Người dùng hỏi 'tủ có gì?', 'xem tất cả đồ'.\n"
+        "Không cần tham số.\n"
+        "Trả về: Chuỗi JSON chứa thông tin tất cả ô (index, status, item, "
+        "...)",
+        PropertyList(), [&storage](const PropertyList &) -> ReturnValue {
+          std::string json = storage.getSlotsJSON();
+          ESP_LOGI(TAG, "📋 Listing all storage slots %s", json.c_str());
+          return json;
+        });
+
+    mcp.AddTool(
+        "storage.get_info",
+        "LẤY THÔNG TIN tổng quan về tủ (số ô trống, số ô có đồ, tổng số ô).\n"
+        "Dùng khi: Cần biết tình trạng tủ.\n"
+        "Không cần tham số.\n"
+        "Trả về: JSON object chứa total, empty, occupied",
+        PropertyList(), [&storage](const PropertyList &) -> ReturnValue {
+          cJSON *root = cJSON_CreateObject();
+          cJSON_AddNumberToObject(root, "total", storage.getTotalSlotCount());
+          cJSON_AddNumberToObject(root, "empty", storage.getEmptySlotCount());
+          cJSON_AddNumberToObject(root, "occupied",
+                                  storage.getOccupiedSlotCount());
+
+          char *jsonStr = cJSON_Print(root);
+          std::string result(jsonStr);
+          cJSON_free(jsonStr);
+          cJSON_Delete(root);
+
+          ESP_LOGI(TAG, "ℹ️ Storage info: %s", result.c_str());
+          return result;
+        });
+
+    // ==================== RECURRING SCHEDULE MCP TOOLS ====================
+
+    mcp.AddTool(
+        "schedule.add_once",
+        "LỊCH CHẠY 1 LẦN duy nhất vào giờ cụ thể trong ngày hôm nay.\n"
+        "Dùng khi: User muốn nhắc 1 lần (ví dụ: 'nhắc họp lúc 3h chiều', 'bật "
+        "đèn 8h tối').\n"
+        "Tham số:\n"
+        "- id (integer): ID duy nhất cho lịch\n"
+        "- hour (integer): Giờ (0-23)\n"
+        "- minute (integer): Phút (0-59)\n"
+        "- note (string): Lệnh sẽ thực thi khi đến giờ\n"
+        "Trả về: true nếu thành công",
+        PropertyList({Property("id", kPropertyTypeInteger),
+                      Property("hour", kPropertyTypeInteger, 0, 23),
+                      Property("minute", kPropertyTypeInteger, 0, 59),
+                      Property("note", kPropertyTypeString)}),
+        [&scheduler, &app](const PropertyList &props) -> ReturnValue {
+          int id = props["id"].value<int>();
+          int hour = props["hour"].value<int>();
+          int minute = props["minute"].value<int>();
+          std::string note = props["note"].value<std::string>();
+
+          ESP_LOGI(TAG, "⏰ Adding once schedule: id=%d, %02d:%02d, note=%s",
+                   id, hour, minute, note.c_str());
+
+          app.Schedule([&scheduler, id, hour, minute, note]() {
+            scheduler.addOnceAtTime(id, hour, minute, note, true);
+          });
+
+          return true;
+        });
+
+    mcp.AddTool(
+        "schedule.add_interval",
+        "LỊCH LẶP LẠI theo khoảng thời gian đều đặn.\n"
+        "Dùng khi: Lặp sau mỗi X phút/giờ (ví dụ: 'kiểm tra mỗi 30 phút', "
+        "'tưới cây 2 giờ 1 lần').\n"
+        "Tham số:\n"
+        "- id (integer): ID duy nhất\n"
+        "- interval_seconds (integer): Khoảng thời gian (giây). VD: 30 phút = "
+        "1800, 1 giờ = 3600\n"
+        "- note (string): Lệnh thực thi mỗi lần\n"
+        "Trả về: true nếu thành công",
+        PropertyList({Property("id", kPropertyTypeInteger),
+                      Property("interval_seconds", kPropertyTypeInteger),
+                      Property("note", kPropertyTypeString)}),
+        [&scheduler, &app](const PropertyList &props) -> ReturnValue {
+          int id = props["id"].value<int>();
+          int sec = props["interval_seconds"].value<int>();
+          std::string note = props["note"].value<std::string>();
+          uint32_t interval = static_cast<uint32_t>(sec);
+
+          ESP_LOGI(TAG, "⏰ Adding interval schedule: id=%d, every %d seconds",
+                   id, sec);
+
+          app.Schedule([&scheduler, id, interval, note]() {
+            scheduler.addIntervalSchedule(id, interval, note, true);
+          });
+
+          return true;
+        });
+
+    mcp.AddTool(
+        "schedule.add_daily",
+        "LỊCH HÀNG NGÀY vào cùng giờ mỗi ngày.\n"
+        "Dùng khi: Lặp cùng giờ mỗi ngày (ví dụ: 'báo thức 6h30 sáng', 'tắt "
+        "đèn 10h tối').\n"
+        "Tham số:\n"
+        "- id (integer): ID duy nhất\n"
+        "- hour (integer): Giờ (0-23)\n"
+        "- minute (integer): Phút (0-59)\n"
+        "- note (string): Lệnh thực thi hàng ngày\n"
+        "Trả về: true nếu thành công",
+        PropertyList({Property("id", kPropertyTypeInteger),
+                      Property("hour", kPropertyTypeInteger, 0, 23),
+                      Property("minute", kPropertyTypeInteger, 0, 59),
+                      Property("note", kPropertyTypeString)}),
+        [&scheduler, &app](const PropertyList &props) -> ReturnValue {
+          int id = props["id"].value<int>();
+          int hour = props["hour"].value<int>();
+          int minute = props["minute"].value<int>();
+          std::string note = props["note"].value<std::string>();
+
+          std::vector<RecurringSchedule::DailyTime> times;
+          times.emplace_back(hour, minute);
+
+          ESP_LOGI(TAG, "⏰ Adding daily schedule: id=%d, %02d:%02d daily", id,
+                   hour, minute);
+
+          app.Schedule([&scheduler, id, times, note]() {
+            scheduler.addDailySchedule(id, times, note, true);
+          });
+
+          return true;
+        });
+
+    mcp.AddTool(
+        "schedule.add_weekly",
+        "LỊCH HÀNG TUẦN vào ngày và giờ cố định.\n"
+        "Dùng khi: Lặp vào ngày cụ thể trong tuần (ví dụ: 'họp mỗi thứ 2 lúc "
+        "9h').\n"
+        "Tham số:\n"
+        "- id (integer): ID duy nhất\n"
+        "- weekday (string): MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, "
+        "SATURDAY, SUNDAY\n"
+        "- hour (integer): Giờ (0-23)\n"
+        "- minute (integer): Phút (0-59)\n"
+        "- note (string): Lệnh thực thi hàng tuần\n"
+        "Trả về: true nếu thành công",
+        PropertyList({Property("id", kPropertyTypeInteger),
+                      Property("weekday", kPropertyTypeString),
+                      Property("hour", kPropertyTypeInteger, 0, 23),
+                      Property("minute", kPropertyTypeInteger, 0, 59),
+                      Property("note", kPropertyTypeString)}),
+        [&scheduler, &app](const PropertyList &props) -> ReturnValue {
+          int id = props["id"].value<int>();
+          std::string wd = props["weekday"].value<std::string>();
+          int hour = props["hour"].value<int>();
+          int minute = props["minute"].value<int>();
+          std::string note = props["note"].value<std::string>();
+
+          RecurringSchedule::WeekDay day =
+              (wd == "MONDAY")      ? RecurringSchedule::MONDAY
+              : (wd == "TUESDAY")   ? RecurringSchedule::TUESDAY
+              : (wd == "WEDNESDAY") ? RecurringSchedule::WEDNESDAY
+              : (wd == "THURSDAY")  ? RecurringSchedule::THURSDAY
+              : (wd == "FRIDAY")    ? RecurringSchedule::FRIDAY
+              : (wd == "SATURDAY")  ? RecurringSchedule::SATURDAY
+                                    : RecurringSchedule::SUNDAY;
+
+          std::vector<RecurringSchedule::WeeklyTime> times;
+          times.emplace_back(day, hour, minute);
+
+          ESP_LOGI(TAG, "⏰ Adding weekly schedule: id=%d, %s %02d:%02d", id,
+                   wd.c_str(), hour, minute);
+
+          app.Schedule([&scheduler, id, times, note]() {
+            scheduler.addWeeklySchedule(id, times, note, true);
+          });
+
+          return true;
+        });
+
+    mcp.AddTool(
+        "schedule.remove",
+        "XÓA một lịch theo ID.\n"
+        "Dùng khi: User muốn hủy lịch.\n"
+        "⚠️ LƯU Ý: PHẢI gọi 'schedule.list' trước để biết ID, và XÁC NHẬN "
+        "với user!\n"
+        "Tham số:\n"
+        "- id (integer): ID lịch cần xóa\n"
+        "Trả về: true nếu thành công",
+        PropertyList({Property("id", kPropertyTypeInteger)}),
+        [&scheduler, &app](const PropertyList &props) -> ReturnValue {
+          int id = props["id"].value<int>();
+
+          ESP_LOGI(TAG, "🗑️ Removing schedule: id=%d", id);
+
+          app.Schedule(
+              [&scheduler, id]() { scheduler.removeSchedule(id, true); });
+
+          return true;
+        });
+
+    mcp.AddTool(
+        "schedule.list",
+        "XEM DANH SÁCH tất cả lịch đang có.\n"
+        "Dùng khi: User hỏi 'có lịch nào', 'xem lịch', hoặc trước khi xóa.\n"
+        "Không cần tham số.\n"
+        "Trả về: JSON chứa thông tin tất cả lịch",
+        PropertyList(), [&scheduler](const PropertyList &) -> ReturnValue {
+          ESP_LOGI(TAG, "📋 Listing all schedules");
+          return scheduler.getSchedulesJSON();
+        });
+
+    // ==================== END MCP TOOLS ====================
+
+    // Light controls
+    mcp.AddTool("light.power",
+                "Kiểm tra trạng thái nguồn điện của hệ thống đèn LED, trả về "
+                "true nếu đèn đang hoạt động bình thường",
+                PropertyList(),
+                [this](const PropertyList &) -> ReturnValue { return true; });
+
+    mcp.AddTool("light.sos",
+                "Điều khiển chế độ đèn SOS khẩn cấp.\n"
+                "Tham số:\n"
+                "- action (string): 'on' = bật SOS, 'off' = tắt SOS, 'status' = kiểm tra trạng thái\n"
+                "Trả về: true/false tùy action",
+                PropertyList({Property("action", kPropertyTypeString)}),
+                [this](const PropertyList &props) -> ReturnValue {
+                  std::string action = props["action"].value<std::string>();
+                  if (action == "on") {
+                    is_sos_led_on = true;
+                    return true;
+                  } else if (action == "off") {
+                    is_sos_led_on = false;
+                    return false;
+                  } else if (action == "status") {
+                    return is_sos_led_on;
+                  }
+                  return false;
+                });
+
+    // Distance sensor
+    mcp.AddTool("sensor.distance",
+                "Điều khiển cảm biến khoảng cách dò đường.\n"
+                "Tham số:\n"
+                "- action (string): 'on' = bật cảm biến, 'off' = tắt cảm biến, 'status' = kiểm tra trạng thái\n"
+                "Trả về: true/false tùy action",
+                PropertyList({Property("action", kPropertyTypeString)}),
+                [this](const PropertyList &props) -> ReturnValue {
+                  std::string action = props["action"].value<std::string>();
+                  if (action == "on") {
+                    is_enable_distance = true;
+                    return true;
+                  } else if (action == "off") {
+                    is_enable_distance = false;
+                    return false;
+                  } else if (action == "status") {
+                    return is_enable_distance;
+                  }
+                  return false;
+                });
+
+    // System functions
+    mcp.AddTool(
+        "system.gps",
+        "Lấy vị trí GPS hiện tại của thiết bị và tạo link Google Maps để xem "
+        "vị trí. "
+        "Trả về đường link dạng http://maps.google.com/?q=lat,lon có thể mở "
+        "trên trình duyệt. "
+        "Nếu tọa độ lat/lon = 0 nghĩa là chưa bắt được tín hiệu GPS, khuyên "
+        "người dùng ra khu vực thông thoáng. "
+        "Dùng để xác định vị trí hiện tại, chia sẻ địa điểm hoặc tìm đường",
+        PropertyList(), [this](const PropertyList &) -> ReturnValue {
+          latitude = 10.036935;
+          longitude = 105.761735;
+          sprintf(gps_link, "http://maps.google.com/?q=%.05f,%.05f", latitude,
+                  longitude);
+          return gps_link;
+        });
+
+    mcp.AddTool("system.wifi_reset",
+                "Khởi động lại thiết bị và vào chế độ cấu hình WiFi để kết nối "
+                "mạng mới. "
+                "**CẢNH BÁO**: Hành động này sẽ ngắt kết nối hiện tại và yêu "
+                "cầu cấu hình lại WiFi. "
+                "Chỉ sử dụng khi cần thay đổi mạng WiFi hoặc khắc phục sự cố "
+                "kết nối. Cần xác nhận từ người dùng",
+                PropertyList(), [](const PropertyList &) -> ReturnValue {
+                  ESP_LOGW(TAG, "WiFi reset requested");
+                  // SwitchNetworkType();
+                  return true;
+                });
+
+    // Telegram functions
+    mcp.AddTool("msg.check",
+                "Kiểm tra và đọc tin nhắn mới từ Telegram bot. Trả về nội dung "
+                "JSON chứa các tin nhắn chưa đọc "
+                "bao gồm người gửi, thời gian, nội dung tin nhắn. Nếu có tin "
+                "nhắn mới sẽ đọc lần lượt từng tin. "
+                "Dùng để nhận thông báo, tin nhắn từ người thân hoặc hệ thống "
+                "giám sát từ xa",
+                PropertyList(), [&app](const PropertyList &) -> ReturnValue {
+                  return app.GetTelegramMsgBufferAsJson();
+                });
+
+    mcp.AddTool(
+        "msg.send",
+        "Gửi tin nhắn text qua Telegram bot đến chat/group đã cấu hình. "
+        "Tham số msg: nội dung tin nhắn cần gửi (hỗ trợ tiếng Việt và "
+        "emoji). "
+        "Dùng để báo cáo tình trạng, gửi thông báo khẩn cấp, hoặc liên lạc "
+        "với "
+        "người thân. "
+        "Tin nhắn sẽ được gửi ngay lập tức nếu có kết nối internet",
+        PropertyList({Property("msg", kPropertyTypeString)}),
+        [&app](const PropertyList &props) -> ReturnValue {
+          app.SendTelegramMessage(props["msg"].value<std::string>());
+          return true;
+        });
+
+    // Camera functions (if available)
+    if (camera_) {
+      mcp.AddTool(
+          "camera.photo",
+          "Chụp ảnh bằng camera tích hợp và tự động gửi qua Telegram bot. "
+          "Không cần tham số đầu vào, hệ thống sẽ tự động chụp, nén và gửi "
+          "ảnh "
+          "với chất lượng tối ưu. "
+          "Sử dụng khi người dùng yêu cầu chụp ảnh gửi cho người thân, ghi "
+          "lại "
+          "sự kiện, "
+          "hoặc chia sẻ hình ảnh môi trường xung quanh. Cần kết nối internet "
+          "để gửi ảnh",
+          PropertyList(),
+          [this, &telegram](const PropertyList &) -> ReturnValue {
+            // if (!camera_->Capture())
+            //   return false;
+
+            // TelegramPhotoInfo info;
+            // auto config = telegram.GetConfig();
+
+            // if (!config.chat_id.empty() && !config.bot_token.empty()) {
+            //   info = {config.bot_token, config.chat_id, "", ""};
+            // } else {
+            //   info = {"7354122596:AAFVA3MTxPZwCwmDPJNBvbchMe3ZlHvyjqU",
+            //           "7799806969", "", ""};
+            // }
+
+            // return camera_->SendPhotoToTelegram(info);
+
+            auto &app = Application::GetInstance();
+
+            app.Schedule([this]() {
+              if (!camera_->Capture()) {
+                throw std::runtime_error("Failed to capture photo");
+              }
+
+              ESP_LOGI(TAG, "Captured photo, sending to Telegram...");
+              // auto question = properties["question"].value<std::string>();
+              TelegramPhotoInfo info;
+
+              // Load configuration from TelegramManager if parameters are
+              // empty
+              auto &telegram_manager = TelegramManager::GetInstance();
+              auto config = telegram_manager.GetConfig();
+
+              info.caption = "";
+              info.parse_mode = ""; // hoặc "" nếu không dùng
+
+              if (!config.chat_id.empty() && !config.bot_token.empty()) {
+                ESP_LOGI(TAG, "Loaded bot token from TelegramManager");
+                info.bot_token = config.bot_token;
+                info.chat_id = config.chat_id;
+              } else {
+                ESP_LOGW(TAG,
+                         "Telegram bot not configured, using default test bot");
+                info.bot_token =
+                    "7354122596:AAFVA3MTxPZwCwmDPJNBvbchMe3ZlHvyjqU";
+                info.chat_id = "7799806969"; // group/supergroup
+              }
+              return camera_->SendPhotoToTelegram(info);
+            });
+
+            return true;
+          });
+
+      mcp.AddTool(
+          "camera.analyze",
+          "Chụp ảnh và phân tích nội dung bằng AI để trả lời câu hỏi về hình "
+          "ảnh. "
+          "Tham số question: câu hỏi về những gì muốn biết trong ảnh (VD: "
+          "'có "
+          "gì trong ảnh?', 'đây là mệnh giá tiền bao nhiêu?', 'đọc chữ trong "
+          "ảnh'). "
+          "AI có thể nhận diện vật thể, đọc văn bản, nhận diện tiền tệ, mô "
+          "tả "
+          "cảnh vật, đếm số lượng đồ vật. "
+          "Hữu ích cho người khiếm thị để 'nhìn' và hiểu môi trường xung "
+          "quanh",
+          PropertyList({Property("question", kPropertyTypeString)}),
+          [this](const PropertyList &props) -> ReturnValue {
+            if (!camera_->Capture())
+              return "Lỗi chụp ảnh";
+            return camera_->Explain(props["question"].value<std::string>());
+          });
+    }
+  }
+
+  // void InitializeTools() {
+
+  //   static LampController lamp(SOS_LED_PIN);
+
+  //   auto &mcp_server = McpServer::GetInstance();
+  //   // auto &board = Board::GetInstance();
+
+  //   mcp_server.AddTool(
+  //       "self.light.get_power", "获取灯是否打开", PropertyList(),
+  //       [this](const PropertyList &properties) -> ReturnValue { return true;
+  //       });
+
+  //   mcp_server.AddTool("self.light.sos",
+  //                      "bật tắt chức năng đèn SOS nhấp nháy liên tục",
+  //                      PropertyList({Property("sos_on",
+  //                      kPropertyTypeBoolean)}), [this](const PropertyList
+  //                      &properties) -> ReturnValue {
+  //                        is_sos_led_on = properties["sos_on"].value<bool>();
+  //                        ESP_LOGI(TAG, "Set sos led to: %d", is_sos_led_on);
+  //                        return is_sos_led_on;
+  //                      });
+
+  //   mcp_server.AddTool("self.light.get_sos_status",
+  //                      "kiểm tra trạng thái đèn SOS đang bật hay tắt",
+  //                      PropertyList(),
+  //                      [this](const PropertyList &properties) -> ReturnValue
+  //                      {
+  //                        ESP_LOGI(TAG, "Get sos led status: %d",
+  //                        is_sos_led_on); return is_sos_led_on;
+  //                      });
+
+  //   mcp_server.AddTool(
+  //       "self.system.get_gps",
+  //       "kiểm tra vị trí hiện tại của thiết bị, thiết bị sẽ trả về đường link
+  //       " "của google map, kiểm tra lại vị trí trên google map hoặc dùng cái
+  //       nào " "cũng được. mục đích lấy được vị trí dạng tên đường, phường xã,
+  //       thành " "phố, quốc gia, nếu vị trí lat lon đều bằng 0 thì chưa có vị
+  //       trí gps " "khuyên người dùng ra ngoài khu vực thông thoáng",
+  //       PropertyList(), [this](const PropertyList &properties) -> ReturnValue
+  //       {
+  //         latitude = 10.036935;
+  //         longitude = 105.761735;
+
+  //         sprintf(gps_link, "http://maps.google.com/?q=%.05f,%.05f",
+  //         latitude,
+  //                 longitude);
+
+  //         // std::string gps_str = get_address_latlon(latitude, longitude);
+  //         // ESP_LOGI(TAG, "Get gps link: %s", gps_link.c_str());
+
+  //         return gps_link;
+  //       });
+
+  //   mcp_server.AddTool(
+  //       "self.light.turn_on_distance",
+  //       "đây là hàm ra lệnh tắt hoặc mở chức năng dò đường dùng "
+  //       "cảm biến khoảng cách để đo, phát rung thông báo khi có vật cản ở
+  //       gần", PropertyList({Property("vibrate", kPropertyTypeBoolean)}),
+  //       [this](const PropertyList &properties) -> ReturnValue {
+  //         //  return led_on_;
+  //         is_enable_distance = properties["vibrate"].value<bool>();
+  //         ESP_LOGI(TAG, "Set distance sensor vibrate to: %d",
+  //                  is_enable_distance);
+  //         return is_enable_distance;
+  //       });
+
+  //   mcp_server.AddTool(
+  //       "self.light.get_distance_status",
+  //       "kiểm tra trạng thái cảm biến khoảng cách đang bật hay tắt",
+  //       PropertyList(), [this](const PropertyList &properties) -> ReturnValue
+  //       {
+  //         ESP_LOGI(TAG, "Get distance sensor vibrate status: %d",
+  //                  is_enable_distance);
+  //         return is_enable_distance;
+  //       });
+
+  //   mcp_server.AddTool(
+  //       "self.system.reconfigure_wifi",
+  //       "Reboot the device and enter WiFi configuration mode.\n"
+  //       "**CAUTION** You must ask the user to confirm this action.",
+  //       PropertyList(), [this](const PropertyList &properties) {
+  //         // ResetWifiConfiguration();
+  //         // print to debug
+
+  //         ESP_LOGW(TAG, "Rebooting to enter WiFi configuration mode");
+  //         return true;
+  //       });
+
+  //   mcp_server.AddTool("self.system.checkMsg",
+  //                      "kiểm tra tin nhắn từ telegram xem có tin nhắn mới "
+  //                      "không nếu có thì đọc nội dung tin nhắn lên. đọc lần "
+  //                      "lượt nội dung tin nhắn \n ",
+  //                      PropertyList(), [this](const PropertyList &properties)
+  //                      {
+  //                        ESP_LOGW(TAG, "new msg from telegram, reading
+  //                        now...");
+
+  //                        auto &app = Application::GetInstance();
+  //                        return app.GetTelegramMsgBufferAsJson();
+  //                      });
+
+  //   mcp_server.AddTool(
+  //       "self.screen.sendMsg",
+  //       "gửi tin nhắn.\n"
+  //       "**CAUTION** trả về nội dung tin nhắn muốn gửi.",
+  //       PropertyList({Property("msg", kPropertyTypeString)}),
+  //       [](const PropertyList &properties) -> ReturnValue {
+  //         // display->SetTheme(
+  //         //     properties["msg"].value<std::string>().c_str());
+
+  //         std::string msg = properties["msg"].value<std::string>();
+  //         ESP_LOGI(TAG, "Message to send to Telegram: %s", msg.c_str());
+
+  //         // Gửi tin nhắn qua Telegram bot
+  //         auto &app = Application::GetInstance();
+  //         app.SendTelegramMessage(msg);
+  //         return true;
+  //       });
+
+  //   if (camera_) {
+
+  //     mcp_server.AddTool(
+  //         "self.camera.take_photo",
+  //         "Take a photo and send it. Use this tool after the user asks you "
+  //         "to send image to others. this tool will automation send\n",
+  //         PropertyList(),
+  //         [this](const PropertyList &properties) -> ReturnValue {
+  //           if (!camera_->Capture()) {
+  //             throw std::runtime_error("Failed to capture photo");
+  //           }
+
+  //           ESP_LOGI(TAG, "Captured photo, sending to Telegram...");
+  //           // auto question = properties["question"].value<std::string>();
+  //           TelegramPhotoInfo info;
+
+  //           // Load configuration from TelegramManager if parameters are
+  //           empty auto &telegram_manager = TelegramManager::GetInstance();
+  //           auto config = telegram_manager.GetConfig();
+
+  //           info.caption = "";
+  //           info.parse_mode = ""; // hoặc "" nếu không dùng
+
+  //           if (!config.chat_id.empty() && !config.bot_token.empty()) {
+  //             ESP_LOGI(TAG, "Loaded bot token from TelegramManager");
+  //             info.bot_token = config.bot_token;
+  //             info.chat_id = config.chat_id;
+  //           } else {
+  //             ESP_LOGW(TAG,
+  //                      "Telegram bot not configured, using default test
+  //                      bot");
+  //             info.bot_token =
+  //             "7354122596:AAFVA3MTxPZwCwmDPJNBvbchMe3ZlHvyjqU"; info.chat_id
+  //             = "7799806969"; // group/supergroup
+  //           }
+
+  //           return camera_->SendPhotoToTelegram(info);
+  //         });
+
+  //     mcp_server.AddTool(
+  //         "self.camera.eyes",
+  //         "hỏi về có nhìn thấy hoặc có nhận diện được gì trong ảnh không. Có
+  //         " "thể" "yêu cầu nhận diện tiền. mệnh giá tiền, yêu cầu đọc chữ từ
+  //         nhiều " "nguồn. nhận diện vật thể\n" "Args:\n" "  `question`: The
+  //         question that you want to ask about the photo.\n" "Return:\n" "  A
+  //         JSON object that provides the photo information.",
+  //         PropertyList({Property("question", kPropertyTypeString)}),
+  //         [this](const PropertyList &properties) -> ReturnValue {
+  //           if (!camera_->Capture()) {
+  //             throw std::runtime_error("Failed to capture photo");
+  //           }
+  //           auto question = properties["question"].value<std::string>();
+  //           return camera_->Explain(question);
+  //         });
+  //   }
+  // }
+
+  static void gps_event_handler(void *event_handler_arg,
+                                esp_event_base_t event_base, int32_t event_id,
+                                void *event_data) {
+    gps_t *gps = NULL;
+    switch (event_id) {
+    case GPS_UPDATE:
+      gps = (gps_t *)event_data;
+
+      latitude = gps->latitude;
+      longitude = gps->longitude;
+
+      if (latitude != last_latitude && longitude != last_longitude &&
+          latitude > 0 && longitude > 0) {
+        last_latitude = latitude;
+        last_longitude = longitude;
+      } else {
+        latitude = last_latitude;
+        longitude = last_longitude;
+      }
+      // 10.036935, 105.761735
+      // latitude = 10.036935;
+      // longitude = 105.761735;
+
+      sprintf(gps_link, "http://maps.google.com/?q=%.05f,%.05f", latitude,
+              longitude);
+
+      if (latitude > 0 && longitude > 0 && !is_speak_gps) {
+        // send_json_via_ws(ask_weather, gps_link);
+        is_speak_gps = true;
+        // start_play_mp3_task(mp3_gps);
+      }
+
+      // sprintf(gps_link, "http://maps.google.com/?q=%.05f,%.05f", latitude,
+      //         longitude);
+      // gps_link
+      /* print information parsed from GPS statements */
+      // ESP_LOGI(TAG,
+      //          "%d/%d/%d %d:%d:%d => \r\n"
+      //          "\t\t\t\t\t\tlatitude   = %.05f°N\r\n"
+      //          "\t\t\t\t\t\tlongitude = %.05f°E\r\n"
+      //          "\t\t\t\t\t\taltitude   = %.02fm\r\n"
+      //          "\t\t\t\t\t\tspeed      = %fm/s",
+      //          gps->date.year + YEAR_BASE, gps->date.month, gps->date.day,
+      //          gps->tim.hour + TIME_ZONE, gps->tim.minute, gps->tim.second,
+      //          gps->latitude, gps->longitude, gps->altitude, gps->speed);
+      break;
+    case GPS_UNKNOWN:
+      /* print unknown statements */
+      // ESP_LOGW(TAG, "%s", (char *)event_data);
+      break;
+    default:
+      break;
+    }
+  }
+
+  static void distance_uart_setup() {
+    // Cấu hình UART
+    uart_config_t uart_config = {
+        .baud_rate = distance_uart_baudrate,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_APB,
+    };
+
+    uart_param_config(distance_uart_port, &uart_config);
+    // Cấu hình chân: chỉ dùng RX (chân TX giữ nguyên hoặc không dùng)
+    uart_set_pin(distance_uart_port, distance_uart_tx_pin, distance_uart_rx_pin,
+                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    uart_driver_install(distance_uart_port, distance_uart_buff_size * 2, 0, 0,
+                        NULL, 0);
+  }
+
+  static void vibrate(int times) {
+    for (int i = 0; i < times; i++) {
+      gpio_set_level(VABRITE_PIN, 1);
+      vTaskDelay(pdMS_TO_TICKS(300));
+      gpio_set_level(VABRITE_PIN, 0);
+      vTaskDelay(pdMS_TO_TICKS(300));
+    }
+  }
+
+  static void distance_uart_read_task(void *pvParameters) {
+    distance_uart_setup();
+    // gpio_set_level(VABRITE_PIN, 1);
+    while (1) {
+      uint8_t *data = (uint8_t *)malloc(distance_uart_buff_size);
+      int len = uart_read_bytes(distance_uart_port, data,
+                                distance_uart_buff_size, pdMS_TO_TICKS(100));
+      if (len == 8) {
+        // Kiểm tra header
+        if (data[0] != 0x5A) {
+          // ESP_LOGW(TAG, "Header không hợp lệ: 0x%02X", data[0]);
+          free(data);
+          continue;
+        }
+
+        uint8_t sum = 0;
+        for (int i = 0; i < 7; i++) {
+          sum += data[i];
+        }
+
+        if (sum == data[7]) {
+          uint16_t distance = ((uint16_t)data[4] << 8) | data[5];
+          uint8_t info = data[6];
+          uint8_t RangeStatus = (info >> 4) & 0x0F;
+          // uint8_t Time = (info >> 2) & 0x03;  // Unused
+          // uint8_t Mode = info & 0x03;  // Unused
+
+          if (RangeStatus != 2) {
+            // ESP_LOGI(TAG,
+            //          "Distance: %d mm, RangeStatus: %d, Time: %d, Mode: % d
+            //          ", distance, RangeStatus, Time, Mode);
+
+            if (is_enable_distance && distance < 1000) {
+              // TickType_t current_tick = xTaskGetTickCount();
+              vibrate(1);
+            }
+          } else {
+            // ESP_LOGI(TAG, "Out Of Range");
+          }
+        } else {
+          // ESP_LOGW(TAG, "Checksum không khớp. Expected: 0x%02X, Received:
+          // 0x%02X",
+          //          sum, data[7]);
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+      }
+      free(data);
+    }
+  }
+
+  void setup_task_distance_uart() {
+    xTaskCreate(distance_uart_read_task, "distance_uart_read_task", 4096, NULL,
+                10, NULL);
+  }
+
+  void setup_gps() {
+    /* NMEA parser configuration */
+    nmea_parser_config_t config = NMEA_PARSER_CONFIG_DEFAULT();
+    /* init NMEA parser library */
+    nmea_parser_handle_t nmea_hdl = nmea_parser_init(&config);
+    /* register event handler for NMEA parser library */
+    nmea_parser_add_handler(nmea_hdl, gps_event_handler, NULL);
+    ESP_LOGI(TAG, "GPS initialized");
+  }
+
+  void blink(int times) {
+    for (int i = 0; i < times; i++) {
+      gpio_set_level(SOS_LED_PIN, 1);
+      vTaskDelay(pdMS_TO_TICKS(200));
+      gpio_set_level(SOS_LED_PIN, 0);
+      vTaskDelay(pdMS_TO_TICKS(200));
+    }
+  }
+
+  void setup_pins() {
+    gpio_reset_pin(SOS_LED_PIN);
+    gpio_set_direction(SOS_LED_PIN, GPIO_MODE_OUTPUT);
+    blink(3);
+
+    gpio_reset_pin(VABRITE_PIN);
+    gpio_set_direction(VABRITE_PIN, GPIO_MODE_OUTPUT);
+    vibrate(2);
+
+    // gpio_set_level(VABRITE_PIN, 1);
+  }
+
+public:
+  Esp32S3CamGpsA7680cBoard()
+      : DualNetworkBoard(ML307_TX_PIN, ML307_RX_PIN, GPIO_NUM_NC, 1),
+        capture_button_(CAPTURE_BUTTON_GPIO, false, 2000, 50, false),
+        mode_button_(MODE_BUTTON_GPIO, false, 2000, 50, false),
+        send_button_(SEND_BUTTON_GPIO, false, 2000, 50, false) {
+    MountStorage();
+    InitializeDisplayI2c();
+    InitializeSsd1306Display();
+    InitializeButtons();
+    InitializeTools();
+    InitializeCamera();
+    // setup_gps();
+    // setup_task_distance_uart();
+    setup_pins();
+  }
+
+  virtual Led *GetLed() override {
+    static SingleLed led(SOS_LED_PIN);
+    return &led;
+  }
+
+  virtual AudioCodec *GetAudioCodec() override {
+    static AdcI2sAudioCodec audio_codec(
+        AUDIO_INPUT_SAMPLE_RATE,     // 16000 Hz ADC input
+        AUDIO_OUTPUT_SAMPLE_RATE,    // 24000 Hz I2S output
+        AUDIO_ADC_MIC_CHANNEL,       // ADC1_CHANNEL_6 (GPIO47)
+        AUDIO_I2S_GPIO_BCLK,         // I2S Bit Clock (GPIO39)
+        AUDIO_I2S_GPIO_WS,           // I2S Word Select (GPIO21)
+        AUDIO_I2S_GPIO_DOUT,         // I2S Data Out (GPIO48)
+        AUDIO_I2S_GPIO_DIN);         // I2S Data In (GPIO47, unused for output-only)
+    return &audio_codec;
+  }
+
+  virtual Display *GetDisplay() override { return display_; }
+
+  virtual Camera *GetCamera() override { return camera_; }
+};
+
+DECLARE_BOARD(Esp32S3CamGpsA7680cBoard);

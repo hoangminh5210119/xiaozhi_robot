@@ -1,0 +1,78 @@
+#ifndef _BOARD_CONFIG_H_
+#define _BOARD_CONFIG_H_
+
+#include "nmea_parser.h"
+#include <driver/gpio.h>
+
+float latitude = 0.0;
+float longitude = 0.0;
+char gps_link[128] = {0};
+float last_latitude = 0.0;
+float last_longitude = 0.0;
+bool is_speak_gps = false;
+bool is_sos_led_on = false;
+
+bool is_enable_distance = false;
+
+#define distance_uart_port UART_NUM_2
+#define distance_uart_rx_pin 1
+#define distance_uart_tx_pin UART_PIN_NO_CHANGE
+#define distance_uart_buff_size 1024
+#define distance_uart_baudrate 9600
+
+// Audio configuration
+#define AUDIO_INPUT_SAMPLE_RATE 24000
+#define AUDIO_OUTPUT_SAMPLE_RATE 24000
+
+// I2S configuration
+#define AUDIO_I2S_GPIO_WS GPIO_NUM_21   // Word Select (LRCK)
+#define AUDIO_I2S_GPIO_BCLK GPIO_NUM_39 // Bit Clock
+#define AUDIO_I2S_GPIO_DIN GPIO_NUM_47  // Data In (ADC)
+#define AUDIO_I2S_GPIO_DOUT GPIO_NUM_48 // Data Out (DAC)
+
+// Control buttons
+#define CAPTURE_BUTTON_GPIO GPIO_NUM_3 // Capture button
+#define MODE_BUTTON_GPIO GPIO_NUM_46   // Mode selection button
+#define SEND_BUTTON_GPIO GPIO_NUM_14   // Send button
+
+// Display configuration (I2C)
+// #define DISPLAY_SDA_PIN GPIO_NUM_41
+// #define DISPLAY_SCL_PIN GPIO_NUM_42
+#define DISPLAY_SDA_PIN GPIO_NUM_41
+#define DISPLAY_SCL_PIN GPIO_NUM_42
+#define DISPLAY_WIDTH 128
+#define DISPLAY_HEIGHT 64
+
+#define DISPLAY_MIRROR_X true
+#define DISPLAY_MIRROR_Y true
+
+// Communication pins
+#define ML307_RX_PIN GPIO_NUM_44 // ML307 module RX pin
+#define ML307_TX_PIN GPIO_NUM_43 // ML307 module TX pin
+#define GPS_RX_PIN GPIO_NUM_40   // GPS module RX pin
+
+// Other GPIO definitions
+#define RX_DISTANCE GPIO_NUM_1  // Distance threshold for reception
+#define SOS_LED_PIN GPIO_NUM_2  // LED for SOS indication
+#define VABRITE_PIN GPIO_NUM_45 // Vibration motor control
+
+// Camera Config
+#define CAMERA_PIN_D0 GPIO_NUM_11
+#define CAMERA_PIN_D1 GPIO_NUM_9
+#define CAMERA_PIN_D2 GPIO_NUM_8
+#define CAMERA_PIN_D3 GPIO_NUM_10
+#define CAMERA_PIN_D4 GPIO_NUM_12
+#define CAMERA_PIN_D5 GPIO_NUM_18
+#define CAMERA_PIN_D6 GPIO_NUM_17
+#define CAMERA_PIN_D7 GPIO_NUM_16
+#define CAMERA_PIN_XCLK GPIO_NUM_15
+#define CAMERA_PIN_PCLK GPIO_NUM_13
+#define CAMERA_PIN_VSYNC GPIO_NUM_6
+#define CAMERA_PIN_HREF GPIO_NUM_7
+#define CAMERA_PIN_SIOC GPIO_NUM_5
+#define CAMERA_PIN_SIOD GPIO_NUM_4
+#define CAMERA_PIN_PWDN GPIO_NUM_NC
+#define CAMERA_PIN_RESET GPIO_NUM_NC
+#define XCLK_FREQ_HZ 20000000
+
+#endif // _BOARD_CONFIG_H_
