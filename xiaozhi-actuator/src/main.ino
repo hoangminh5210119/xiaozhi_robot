@@ -1,8 +1,41 @@
-#include <Arduino.h>
-#include <Wire.h>
-#include <ArduinoJson.h>
 #include <AccelStepper.h>
+#include <Arduino.h>
+#include <ArduinoJson.h>
 #include <ESP32Servo.h>
+#include <Wire.h>
+
+#include "HeartRateBLE.h"
+
+HeartRateBLE hrBle;
+// HeartRateBLE heartRate("e2:03:b2:52:c1:3f"); // MAC thiết bị BLE
+
+void onData(int bpm, int battery) {
+  Serial.printf("👉 [CALLBACK] BPM=%d | Battery=%d%%\n", bpm, battery);
+}
+
+void onConnect(bool connected) {
+  if (connected)
+    Serial.println("🟢 Đã kết nối BLE!");
+  else
+    Serial.println("🔴 Mất kết nối BLE!");
+}
+
+void bluetooth_init() {
+  Serial.println("=== ESP32 BLE Heart Rate (Auto + Direct) ===");
+
+  hrBle.begin();
+  hrBle.setDataCallback(onData);
+  hrBle.setConnectCallback(onConnect);
+  hrBle.setAutoReconnect(true, 5);
+
+  // ✅ Kết nối trực tiếp (bỏ qua quét)
+  if (!hrBle.connectDirect("c7:f9:08:e7:fe:1b", BLE_ADDR_TYPE_RANDOM)) {
+    Serial.println("⚠️ Không kết nối được, thử quét...");
+    hrBle.scanHeartRate(10);
+    hrBle.connectToDevice();
+  }
+
+}
 
 // ==================== BOARD: ESP32 DevKit v1 (30-pin) ====================
 // CPU: ESP32-WROOM-32
@@ -10,9 +43,9 @@
 // GPIO: 30 pins available (tránh strapping pins)
 
 // ==================== I2C CONFIGURATION ====================
-#define I2C_SLAVE_ADDR    0x55
-#define I2C_SDA_PIN       21    // Default I2C SDA (safe)
-#define I2C_SCL_PIN       22    // Default I2C SCL (safe)
+#define I2C_SLAVE_ADDR 0x55
+#define I2C_SDA_PIN 21 // Default I2C SDA (safe)
+#define I2C_SCL_PIN 22 // Default I2C SCL (safe)
 
 // ==================== STRAPPING PINS (TRÁNH KHI CÓ THỂ) ====================
 // GPIO 0  : Boot mode (LOW = download mode) - CÓ THỂ dùng sau khi boot
@@ -26,78 +59,82 @@
 // 4 motors cho Mecanum wheels: FL, FR, BL, BR
 
 // EN (Enable) pin chung cho tất cả motors
-#define MOTOR_EN          33    // GPIO33 - Safe, no conflicts
+#define MOTOR_EN 33 // GPIO33 - Safe, no conflicts
 
 // Motor FL (Front Left)
-#define MOTOR_FL_STEP     26    // GPIO26 - Safe
-#define MOTOR_FL_DIR      25    // GPIO25 - Safe
+#define MOTOR_FL_STEP 26 // GPIO26 - Safe
+#define MOTOR_FL_DIR 25  // GPIO25 - Safe
 
 // Motor FR (Front Right)
-#define MOTOR_FR_STEP     14    // GPIO14 - Safe
-#define MOTOR_FR_DIR      27    // GPIO27 - Safe
+#define MOTOR_FR_STEP 14 // GPIO14 - Safe
+#define MOTOR_FR_DIR 27  // GPIO27 - Safe
 
 // Motor BL (Back Left)
-#define MOTOR_BL_STEP     13    // GPIO13 - Safe
-#define MOTOR_BL_DIR      32    // GPIO32 - Safe (ADC but can be output)
+#define MOTOR_BL_STEP 13 // GPIO13 - Safe
+#define MOTOR_BL_DIR 32  // GPIO32 - Safe (ADC but can be output)
 
 // Motor BR (Back Right)
-#define MOTOR_BR_STEP     4     // GPIO4 - Safe
-#define MOTOR_BR_DIR      16    // GPIO16 - Safe (U1RXD but can reuse)
+#define MOTOR_BR_STEP 4 // GPIO4 - Safe
+#define MOTOR_BR_DIR 16 // GPIO16 - Safe (U1RXD but can reuse)
 
 // Stepper motor configuration
-#define MAX_SPEED         2000.0  // steps/sec
-#define ACCELERATION      1000.0  // steps/sec^2
-#define DEFAULT_SPEED     1000.0  // steps/sec
-#define STEPS_PER_REV     200     // 1.8° stepper = 200 steps/rev
-#define MICROSTEPS        16      // DRV8825 microstepping
+#define MAX_SPEED 2000.0     // steps/sec
+#define ACCELERATION 1000.0  // steps/sec^2
+#define DEFAULT_SPEED 1000.0 // steps/sec
+#define STEPS_PER_REV 200    // 1.8° stepper = 200 steps/rev
+#define MICROSTEPS 16        // DRV8825 microstepping
 
 // ==================== SERVO PINS (4 storage compartments) ====================
 // Servos for storage door control
 // PWM frequency: 50Hz (20ms period)
 // Pulse width: 1ms (0°) to 2ms (180°)
 
-#define SERVO_SLOT_0      17    // GPIO17 - Safe (U2TXD but can reuse)
-#define SERVO_SLOT_1      5     // GPIO5 - Safe after boot
-#define SERVO_SLOT_2      18    // GPIO18 - Safe (VSPI CLK but can reuse)
-#define SERVO_SLOT_3      19    // GPIO19 - Safe (VSPI MISO but can reuse)
+#define SERVO_SLOT_0 17 // GPIO17 - Safe (U2TXD but can reuse)
+#define SERVO_SLOT_1 5  // GPIO5 - Safe after boot
+#define SERVO_SLOT_2 18 // GPIO18 - Safe (VSPI CLK but can reuse)
+#define SERVO_SLOT_3 19 // GPIO19 - Safe (VSPI MISO but can reuse)
 
 // ==================== LED INDICATOR PINS (4 LEDs) ====================
 // LED indicators for storage compartments
 // Dùng GPIO còn trống
 
-#define LED_SLOT_0        2     // GPIO2 - Safe sau boot (onboard LED)
-#define LED_SLOT_1        0     // GPIO0 - Safe sau boot (boot button LED)
-#define LED_SLOT_2        12    // GPIO12 - TRÁNH nếu có thể (flash voltage)
-#define LED_SLOT_3        15    // GPIO15 - Safe với pull-up resistor
+#define LED_SLOT_0 2  // GPIO2 - Safe sau boot (onboard LED)
+#define LED_SLOT_1 0  // GPIO0 - Safe sau boot (boot button LED)
+#define LED_SLOT_2 12 // GPIO12 - TRÁNH nếu có thể (flash voltage)
+#define LED_SLOT_3 15 // GPIO15 - Safe với pull-up resistor
 
 // ⚠️ CHÚ Ý GPIO15: Cần pull-up 10kΩ để boot đúng (must be HIGH at boot)
 
 // ==================== STATUS LED PINS ====================
-#define LED_STATUS        2     // GPIO2 - Onboard LED (blue)
-#define LED_I2C_ACTIVITY  0     // GPIO0 - Boot button LED
+#define LED_STATUS 2       // GPIO2 - Onboard LED (blue)
+#define LED_I2C_ACTIVITY 0 // GPIO0 - Boot button LED
 
 // ==================== SERVO CONFIGURATION ====================
 // Servo angle limits
-#define SERVO_ANGLE_OPEN    0     // 0° = door open
-#define SERVO_ANGLE_CLOSE   90    // 90° = door closed
-#define SERVO_MIN_US        500   // Minimum pulse width (µs)
-#define SERVO_MAX_US        2500  // Maximum pulse width (µs)
+#define SERVO_ANGLE_OPEN 0   // 0° = door open
+#define SERVO_ANGLE_CLOSE 90 // 90° = door closed
+#define SERVO_MIN_US 500     // Minimum pulse width (µs)
+#define SERVO_MAX_US 2500    // Maximum pulse width (µs)
 
 // ==================== GLOBAL VARIABLES ====================
-String rxBuffer = "";           // Buffer for incoming I2C data
-bool commandReady = false;      // Flag when complete command received
-String responseBuffer = "";     // Response to send back
+String rxBuffer = "";       // Buffer for incoming I2C data
+bool commandReady = false;  // Flag when complete command received
+String responseBuffer = ""; // Response to send back
 
 // Serial testing variables
-String serialBuffer = "";       // Buffer for incoming Serial data
+String serialBuffer = "";        // Buffer for incoming Serial data
 bool serialCommandReady = false; // Flag when complete Serial command received
 
 // AccelStepper objects for 4 motors (Mecanum wheels)
 // Constructor: AccelStepper(DRIVER, stepPin, dirPin)
-AccelStepper motorFL(AccelStepper::DRIVER, MOTOR_FL_STEP, MOTOR_FL_DIR);   // Front Left
-AccelStepper motorFR(AccelStepper::DRIVER, MOTOR_FR_STEP, MOTOR_FR_DIR);   // Front Right
-AccelStepper motorBL(AccelStepper::DRIVER, MOTOR_BL_STEP, MOTOR_BL_DIR);   // Back Left
-AccelStepper motorBR(AccelStepper::DRIVER, MOTOR_BR_STEP, MOTOR_BR_DIR);   // Back Right
+AccelStepper motorFL(AccelStepper::DRIVER, MOTOR_FL_STEP,
+                     MOTOR_FL_DIR); // Front Left
+AccelStepper motorFR(AccelStepper::DRIVER, MOTOR_FR_STEP,
+                     MOTOR_FR_DIR); // Front Right
+AccelStepper motorBL(AccelStepper::DRIVER, MOTOR_BL_STEP,
+                     MOTOR_BL_DIR); // Back Left
+AccelStepper motorBR(AccelStepper::DRIVER, MOTOR_BR_STEP,
+                     MOTOR_BR_DIR); // Back Right
 
 // ESP32Servo objects for 4 servos
 Servo servos[4];
@@ -110,10 +147,11 @@ unsigned long movementStartTime = 0;
 int movementDuration = 0;
 bool isMoving = false;
 
-// ==================== STEPPER MOTOR CONTROL (AccelStepper) ====================
+// ==================== STEPPER MOTOR CONTROL (AccelStepper)
+// ====================
 /**
  * Mecanum wheel movement equations:
- * 
+ *
  * Forward:     FL=+, FR=+, BL=+, BR=+
  * Backward:    FL=-, FR=-, BL=-, BR=-
  * Left:        FL=-, FR=+, BL=+, BR=-
@@ -131,22 +169,26 @@ void setupMotors() {
   // Configure AccelStepper motors
   motorFL.setMaxSpeed(MAX_SPEED);
   motorFL.setAcceleration(ACCELERATION);
-  
+
   motorFR.setMaxSpeed(MAX_SPEED);
   motorFR.setAcceleration(ACCELERATION);
-  
+
   motorBL.setMaxSpeed(MAX_SPEED);
   motorBL.setAcceleration(ACCELERATION);
-  
+
   motorBR.setMaxSpeed(MAX_SPEED);
   motorBR.setAcceleration(ACCELERATION);
 
   Serial.println("✅ Stepper motors initialized (ESP32 DevKit)");
   Serial.printf("   Motor EN: GPIO%d (Active LOW)\n", MOTOR_EN);
-  Serial.printf("   FL: STEP=GPIO%d, DIR=GPIO%d\n", MOTOR_FL_STEP, MOTOR_FL_DIR);
-  Serial.printf("   FR: STEP=GPIO%d, DIR=GPIO%d\n", MOTOR_FR_STEP, MOTOR_FR_DIR);
-  Serial.printf("   BL: STEP=GPIO%d, DIR=GPIO%d\n", MOTOR_BL_STEP, MOTOR_BL_DIR);
-  Serial.printf("   BR: STEP=GPIO%d, DIR=GPIO%d\n", MOTOR_BR_STEP, MOTOR_BR_DIR);
+  Serial.printf("   FL: STEP=GPIO%d, DIR=GPIO%d\n", MOTOR_FL_STEP,
+                MOTOR_FL_DIR);
+  Serial.printf("   FR: STEP=GPIO%d, DIR=GPIO%d\n", MOTOR_FR_STEP,
+                MOTOR_FR_DIR);
+  Serial.printf("   BL: STEP=GPIO%d, DIR=GPIO%d\n", MOTOR_BL_STEP,
+                MOTOR_BL_DIR);
+  Serial.printf("   BR: STEP=GPIO%d, DIR=GPIO%d\n", MOTOR_BR_STEP,
+                MOTOR_BR_DIR);
   Serial.printf("   Max Speed: %.0f steps/sec\n", MAX_SPEED);
   Serial.printf("   Acceleration: %.0f steps/sec²\n", ACCELERATION);
 }
@@ -165,7 +207,7 @@ void setMotorSpeed(float speedPercent) {
   // speedPercent: 0-100
   float actualSpeed = map(speedPercent, 0, 100, 0, MAX_SPEED);
   actualSpeed = constrain(actualSpeed, 0, MAX_SPEED);
-  
+
   motorFL.setSpeed(actualSpeed);
   motorFR.setSpeed(actualSpeed);
   motorBL.setSpeed(actualSpeed);
@@ -173,53 +215,47 @@ void setMotorSpeed(float speedPercent) {
 }
 
 void moveVehicle(String direction, int speed, int duration_ms) {
-  Serial.printf("🚗 Moving: %s, speed=%d, duration=%dms\n", 
-                direction.c_str(), speed, duration_ms);
+  Serial.printf("🚗 Moving: %s, speed=%d, duration=%dms\n", direction.c_str(),
+                speed, duration_ms);
 
   enableMotors();
-  
+
   // Calculate speed for each motor
   float motorSpeed = map(speed, 0, 100, 0, MAX_SPEED);
   motorSpeed = constrain(motorSpeed, 0, MAX_SPEED);
 
   // Set movement direction and speeds based on Mecanum equations
   if (direction == "forward") {
-    motorFL.setSpeed(motorSpeed);   // +
-    motorFR.setSpeed(motorSpeed);   // +
-    motorBL.setSpeed(motorSpeed);   // +
-    motorBR.setSpeed(motorSpeed);   // +
-  } 
-  else if (direction == "backward") {
-    motorFL.setSpeed(-motorSpeed);  // -
-    motorFR.setSpeed(-motorSpeed);  // -
-    motorBL.setSpeed(-motorSpeed);  // -
-    motorBR.setSpeed(-motorSpeed);  // -
-  } 
-  else if (direction == "left") {
-    motorFL.setSpeed(-motorSpeed);  // -
-    motorFR.setSpeed(motorSpeed);   // +
-    motorBL.setSpeed(motorSpeed);   // +
-    motorBR.setSpeed(-motorSpeed);  // -
-  } 
-  else if (direction == "right") {
-    motorFL.setSpeed(motorSpeed);   // +
-    motorFR.setSpeed(-motorSpeed);  // -
-    motorBL.setSpeed(-motorSpeed);  // -
-    motorBR.setSpeed(motorSpeed);   // +
-  } 
-  else if (direction == "rotate_left") {
-    motorFL.setSpeed(-motorSpeed);  // -
-    motorFR.setSpeed(motorSpeed);   // +
-    motorBL.setSpeed(-motorSpeed);  // -
-    motorBR.setSpeed(motorSpeed);   // +
-  } 
-  else if (direction == "rotate_right") {
-    motorFL.setSpeed(motorSpeed);   // +
-    motorFR.setSpeed(-motorSpeed);  // -
-    motorBL.setSpeed(motorSpeed);   // +
-    motorBR.setSpeed(-motorSpeed);  // -
-  } 
-  else if (direction == "stop") {
+    motorFL.setSpeed(motorSpeed); // +
+    motorFR.setSpeed(motorSpeed); // +
+    motorBL.setSpeed(motorSpeed); // +
+    motorBR.setSpeed(motorSpeed); // +
+  } else if (direction == "backward") {
+    motorFL.setSpeed(-motorSpeed); // -
+    motorFR.setSpeed(-motorSpeed); // -
+    motorBL.setSpeed(-motorSpeed); // -
+    motorBR.setSpeed(-motorSpeed); // -
+  } else if (direction == "left") {
+    motorFL.setSpeed(-motorSpeed); // -
+    motorFR.setSpeed(motorSpeed);  // +
+    motorBL.setSpeed(motorSpeed);  // +
+    motorBR.setSpeed(-motorSpeed); // -
+  } else if (direction == "right") {
+    motorFL.setSpeed(motorSpeed);  // +
+    motorFR.setSpeed(-motorSpeed); // -
+    motorBL.setSpeed(-motorSpeed); // -
+    motorBR.setSpeed(motorSpeed);  // +
+  } else if (direction == "rotate_left") {
+    motorFL.setSpeed(-motorSpeed); // -
+    motorFR.setSpeed(motorSpeed);  // +
+    motorBL.setSpeed(-motorSpeed); // -
+    motorBR.setSpeed(motorSpeed);  // +
+  } else if (direction == "rotate_right") {
+    motorFL.setSpeed(motorSpeed);  // +
+    motorFR.setSpeed(-motorSpeed); // -
+    motorBL.setSpeed(motorSpeed);  // +
+    motorBR.setSpeed(-motorSpeed); // -
+  } else if (direction == "stop") {
     stopAllMotors();
     return;
   }
@@ -228,26 +264,26 @@ void moveVehicle(String direction, int speed, int duration_ms) {
   isMoving = true;
   movementStartTime = millis();
   movementDuration = duration_ms;
-  
+
   Serial.printf("✅ Movement started at speed=%.0f steps/sec\n", motorSpeed);
 }
 
 void stopAllMotors() {
   motorFL.setSpeed(0);
   motorFL.stop();
-  
+
   motorFR.setSpeed(0);
   motorFR.stop();
-  
+
   motorBL.setSpeed(0);
   motorBL.stop();
-  
+
   motorBR.setSpeed(0);
   motorBR.stop();
-  
+
   disableMotors();
   isMoving = false;
-  
+
   Serial.println("🛑 All motors stopped");
 }
 
@@ -273,7 +309,7 @@ void updateMotors() {
 void setupServos() {
   // Initialize ESP32Servo library
   // ESP32 has 16 PWM channels, we use 4 for servos
-  
+
   // Attach servos to pins
   servos[0].attach(SERVO_SLOT_0, SERVO_MIN_US, SERVO_MAX_US);
   servos[1].attach(SERVO_SLOT_1, SERVO_MIN_US, SERVO_MAX_US);
@@ -296,11 +332,11 @@ void setupServos() {
 
 void setupLEDs() {
   // Setup LED pins
-  pinMode(LED_SLOT_0, OUTPUT);  // GPIO2
-  pinMode(LED_SLOT_1, OUTPUT);  // GPIO0
-  pinMode(LED_SLOT_2, OUTPUT);  // GPIO12 (⚠️ strapping pin)
-  pinMode(LED_SLOT_3, OUTPUT);  // GPIO15 (⚠️ needs pull-up)
-  
+  pinMode(LED_SLOT_0, OUTPUT); // GPIO2
+  pinMode(LED_SLOT_1, OUTPUT); // GPIO0
+  pinMode(LED_SLOT_2, OUTPUT); // GPIO12 (⚠️ strapping pin)
+  pinMode(LED_SLOT_3, OUTPUT); // GPIO15 (⚠️ needs pull-up)
+
   pinMode(LED_STATUS, OUTPUT);
   pinMode(LED_I2C_ACTIVITY, OUTPUT);
 
@@ -329,26 +365,22 @@ void controlStorageDoor(int slot, String action) {
   }
 
   int angle = SERVO_ANGLE_CLOSE; // Default closed
-  
+
   if (action == "open") {
     angle = SERVO_ANGLE_OPEN; // 0 degrees = open
     storageLEDs[slot] = true;
-  } 
-  else if (action == "close") {
+  } else if (action == "close") {
     angle = SERVO_ANGLE_CLOSE; // 90 degrees = closed
     storageLEDs[slot] = false;
-  } 
-  else if (action == "led_on") {
+  } else if (action == "led_on") {
     storageLEDs[slot] = true;
     updateStorageLED(slot);
     return;
-  } 
-  else if (action == "led_off") {
+  } else if (action == "led_off") {
     storageLEDs[slot] = false;
     updateStorageLED(slot);
     return;
-  } 
-  else if (action == "led_blink") {
+  } else if (action == "led_blink") {
     // Blink LED 3 times
     for (int i = 0; i < 3; i++) {
       storageLEDs[slot] = true;
@@ -363,30 +395,31 @@ void controlStorageDoor(int slot, String action) {
 
   // Move servo to angle using ESP32Servo library
   servos[slot].write(angle);
-  
+
   // Update LED
   updateStorageLED(slot);
 
-  Serial.printf("✅ Slot %d door %s (angle=%d°)\n", slot, action.c_str(), angle);
+  Serial.printf("✅ Slot %d door %s (angle=%d°)\n", slot, action.c_str(),
+                angle);
 }
 
 void updateStorageLED(int slot) {
   // Update LED state for storage slot
   bool state = storageLEDs[slot];
-  
+
   switch (slot) {
-    case 0:
-      digitalWrite(LED_SLOT_0, state ? HIGH : LOW);
-      break;
-    case 1:
-      digitalWrite(LED_SLOT_1, state ? HIGH : LOW);
-      break;
-    case 2:
-      digitalWrite(LED_SLOT_2, state ? HIGH : LOW);
-      break;
-    case 3:
-      digitalWrite(LED_SLOT_3, state ? HIGH : LOW);
-      break;
+  case 0:
+    digitalWrite(LED_SLOT_0, state ? HIGH : LOW);
+    break;
+  case 1:
+    digitalWrite(LED_SLOT_1, state ? HIGH : LOW);
+    break;
+  case 2:
+    digitalWrite(LED_SLOT_2, state ? HIGH : LOW);
+    break;
+  case 3:
+    digitalWrite(LED_SLOT_3, state ? HIGH : LOW);
+    break;
   }
 }
 
@@ -394,7 +427,7 @@ void updateStorageLED(int slot) {
 void processSerialInput() {
   while (Serial.available()) {
     char c = Serial.read();
-    
+
     if (c == '\n' || c == '\r') {
       if (serialBuffer.length() > 0) {
         // Chỉ xử lý nếu buffer chứa ký tự ASCII hợp lệ
@@ -402,14 +435,14 @@ void processSerialInput() {
         for (int i = 0; i < serialBuffer.length(); i++) {
           char ch = serialBuffer.charAt(i);
           // Chỉ chấp nhận: chữ cái, số, JSON characters, space, underscore
-          if (!isalnum(ch) && ch != '{' && ch != '}' && ch != '"' && 
-              ch != ':' && ch != ',' && ch != '_' && ch != ' ' && 
-              ch != '.' && ch != '-') {
+          if (!isalnum(ch) && ch != '{' && ch != '}' && ch != '"' &&
+              ch != ':' && ch != ',' && ch != '_' && ch != ' ' && ch != '.' &&
+              ch != '-') {
             isValid = false;
             break;
           }
         }
-        
+
         if (isValid) {
           serialCommandReady = true;
         } else {
@@ -461,91 +494,82 @@ void printTestMenu() {
 
 void executeTestCommand(String cmd) {
   cmd.trim();
-  
+
   // Bỏ qua nếu command rỗng
   if (cmd.length() == 0) {
     return;
   }
-  
+
   cmd.toLowerCase();
-  
+
   Serial.printf("🧪 Executing test command: '%s'\n", cmd.c_str());
-  
+
   // Vehicle movement tests
   if (cmd == "1" || cmd == "forward") {
     moveVehicle("forward", 50, 2000);
-  }
-  else if (cmd == "2" || cmd == "backward") {
+  } else if (cmd == "2" || cmd == "backward") {
     moveVehicle("backward", 50, 2000);
-  }
-  else if (cmd == "3" || cmd == "left") {
+  } else if (cmd == "3" || cmd == "left") {
     moveVehicle("left", 50, 2000);
-  }
-  else if (cmd == "4" || cmd == "right") {
+  } else if (cmd == "4" || cmd == "right") {
     moveVehicle("right", 50, 2000);
-  }
-  else if (cmd == "5" || cmd == "rotate_left") {
+  } else if (cmd == "5" || cmd == "rotate_left") {
     moveVehicle("rotate_left", 50, 2000);
-  }
-  else if (cmd == "6" || cmd == "rotate_right") {
+  } else if (cmd == "6" || cmd == "rotate_right") {
     moveVehicle("rotate_right", 50, 2000);
-  }
-  else if (cmd == "7" || cmd == "stop") {
+  } else if (cmd == "7" || cmd == "stop") {
     moveVehicle("stop", 0, 0);
   }
-  
+
   // Storage door tests
   else if (cmd.startsWith("o") && cmd.length() == 2) {
     int slot = cmd.charAt(1) - '0';
     if (slot >= 0 && slot <= 5) {
       controlStorageDoor(slot, "open");
     }
-  }
-  else if (cmd.startsWith("c") && cmd.length() == 2) {
+  } else if (cmd.startsWith("c") && cmd.length() == 2) {
     int slot = cmd.charAt(1) - '0';
     if (slot >= 0 && slot <= 5) {
       controlStorageDoor(slot, "close");
     }
   }
-  
+
   // LED tests
   else if (cmd.startsWith("lon") && cmd.length() == 4) {
     int slot = cmd.charAt(3) - '0';
     if (slot >= 0 && slot <= 5) {
       controlStorageDoor(slot, "led_on");
     }
-  }
-  else if (cmd.startsWith("loff") && cmd.length() == 5) {
+  } else if (cmd.startsWith("loff") && cmd.length() == 5) {
     int slot = cmd.charAt(4) - '0';
     if (slot >= 0 && slot <= 5) {
       controlStorageDoor(slot, "led_off");
     }
-  }
-  else if (cmd.startsWith("blink") && cmd.length() == 6) {
+  } else if (cmd.startsWith("blink") && cmd.length() == 6) {
     int slot = cmd.charAt(5) - '0';
     if (slot >= 0 && slot <= 5) {
       controlStorageDoor(slot, "led_blink");
     }
   }
-  
+
   // JSON tests
   else if (cmd == "json1") {
     Serial.println("📋 Testing JSON vehicle command:");
-    String testJson = "{\"type\":\"vehicle.move\",\"direction\":\"forward\",\"speed\":75,\"duration_ms\":3000}";
+    String testJson = "{\"type\":\"vehicle.move\",\"direction\":\"forward\","
+                      "\"speed\":75,\"duration_ms\":3000}";
     Serial.println("   " + testJson);
     processCommand(testJson);
     Serial.println("   Response: " + responseBuffer);
     responseBuffer = "";
-  }
-  else if (cmd == "json2") {
+  } else if (cmd == "json2") {
     Serial.println("📋 Testing JSON storage command:");
-    String testJson = "{\"type\":\"storage.control\",\"slot\":1,\"action\":\"open\"}";
+    String testJson =
+        "{\"type\":\"storage.control\",\"slot\":1,\"action\":\"open\"}";
     Serial.println("   " + testJson);
     processCommand(testJson);
     Serial.println("   Response: " + responseBuffer);
     responseBuffer = "";
-  }
-  else if (cmd == "json3") {
+  } else if (cmd == "json3") {
     Serial.println("📋 Testing JSON status request:");
     String testJson = "{\"type\":\"status.get\"}";
     Serial.println("   " + testJson);
@@ -553,11 +577,12 @@ void executeTestCommand(String cmd) {
     Serial.println("   Response: " + responseBuffer);
     responseBuffer = "";
   }
-  
+
   // Status and help
   else if (cmd == "status") {
     Serial.println("\n========== SYSTEM STATUS ==========");
-    Serial.printf("Motors Enabled: %s\n", digitalRead(MOTOR_EN) == LOW ? "YES" : "NO");
+    Serial.printf("Motors Enabled: %s\n",
+                  digitalRead(MOTOR_EN) == LOW ? "YES" : "NO");
     Serial.printf("Is Moving: %s\n", isMoving ? "YES" : "NO");
     if (isMoving) {
       Serial.printf("Movement Duration: %d ms\n", movementDuration);
@@ -568,11 +593,10 @@ void executeTestCommand(String cmd) {
       Serial.printf("  Slot %d: %s\n", i, storageLEDs[i] ? "ON" : "OFF");
     }
     Serial.println("===================================");
-  }
-  else if (cmd == "help") {
+  } else if (cmd == "help") {
     printTestMenu();
   }
-  
+
   // Handle JSON input directly
   else if (cmd.startsWith("{") && cmd.endsWith("}")) {
     Serial.println("📋 Processing direct JSON command:");
@@ -581,16 +605,16 @@ void executeTestCommand(String cmd) {
     Serial.println("   Response: " + responseBuffer);
     responseBuffer = "";
   }
-  
+
   else {
     Serial.println("❌ Unknown command. Type 'help' for available commands.");
   }
 }
 void onI2CReceive(int numBytes) {
   digitalWrite(LED_I2C_ACTIVITY, HIGH);
-  
+
   // ========== STRICT VALIDATION: Chỉ nhận data hợp lệ ==========
-  
+
   // Bỏ qua nếu nhận quá ít bytes (noise)
   if (numBytes < 10) {
     // Flush buffer để clear noise
@@ -598,41 +622,42 @@ void onI2CReceive(int numBytes) {
       Wire.read();
     }
     digitalWrite(LED_I2C_ACTIVITY, LOW);
-    return;  // Silent ignore - không log để tránh spam
+    return; // Silent ignore - không log để tránh spam
   }
-  
+
   // Đọc tất cả bytes có sẵn
   String tempBuffer = "";
   int bytesRead = 0;
   bool hasOpenBrace = false;
-  
-  while (Wire.available() && bytesRead < 256) {  // Max 256 bytes
+
+  while (Wire.available() && bytesRead < 256) { // Max 256 bytes
     char c = Wire.read();
     bytesRead++;
-    
+
     // Check first char
     if (bytesRead == 1) {
       if (c != '{') {
         // Not JSON - clear rest and ignore
-        while (Wire.available()) Wire.read();
+        while (Wire.available())
+          Wire.read();
         digitalWrite(LED_I2C_ACTIVITY, LOW);
-        return;  // Silent ignore
+        return; // Silent ignore
       }
       hasOpenBrace = true;
     }
-    
+
     tempBuffer += c;
-    
+
     // Kết thúc khi gặp dấu đóng ngoặc JSON
     if (c == '}') {
       break;
     }
   }
-  
+
   // Validate: Phải bắt đầu bằng '{' và kết thúc bằng '}'
-  if (hasOpenBrace && tempBuffer.length() >= 10 && 
+  if (hasOpenBrace && tempBuffer.length() >= 10 &&
       tempBuffer.charAt(0) == '{' && tempBuffer.endsWith("}")) {
-    
+
     // Extra validation: Check if it contains "type" field (required)
     if (tempBuffer.indexOf("\"type\"") > 0) {
       rxBuffer = tempBuffer;
@@ -640,7 +665,8 @@ void onI2CReceive(int numBytes) {
       Serial.printf("📩 Received %d bytes: %s\n", bytesRead, rxBuffer.c_str());
     } else {
       // Invalid JSON - missing "type" field
-      Serial.printf("⚠️  Rejected incomplete JSON (%d bytes): %s\n", bytesRead, tempBuffer.c_str());
+      Serial.printf("⚠️  Rejected incomplete JSON (%d bytes): %s\n", bytesRead,
+                    tempBuffer.c_str());
     }
   } else {
     // Invalid format - log với hex dump để debug
@@ -651,13 +677,13 @@ void onI2CReceive(int numBytes) {
     }
     Serial.println();
   }
-  
+
   digitalWrite(LED_I2C_ACTIVITY, LOW);
 }
 
 void onI2CRequest() {
   digitalWrite(LED_I2C_ACTIVITY, HIGH);
-  
+
   if (responseBuffer.length() > 0) {
     Wire.write(responseBuffer.c_str());
     Serial.printf("📤 Sent response: %s\n", responseBuffer.c_str());
@@ -665,7 +691,7 @@ void onI2CRequest() {
   } else {
     Wire.write("{\"status\":\"ok\"}");
   }
-  
+
   digitalWrite(LED_I2C_ACTIVITY, LOW);
 }
 
@@ -686,28 +712,36 @@ void processCommand(String jsonStr) {
     String direction = doc["direction"].as<String>();
     int speed = doc["speed"] | 50;
     int duration = doc["duration_ms"] | 0;
-    
+
     moveVehicle(direction, speed, duration);
     responseBuffer = "{\"status\":\"ok\",\"message\":\"Vehicle moving\"}";
-  } 
-  else if (cmdType == "storage.control") {
+  } else if (cmdType == "storage.control") {
     int slot = doc["slot"] | -1;
     String action = doc["action"].as<String>();
-    
+
     controlStorageDoor(slot, action);
     responseBuffer = "{\"status\":\"ok\",\"message\":\"Storage controlled\"}";
-  } 
-  else if (cmdType == "status.get") {
+  } else if (cmdType == "status.get") {
     // Build status JSON
     StaticJsonDocument<256> statusDoc;
     statusDoc["battery"] = 12.5; // Dummy value
     statusDoc["motors_enabled"] = !digitalRead(MOTOR_EN);
     statusDoc["is_moving"] = isMoving;
-    
+
     serializeJson(statusDoc, responseBuffer);
-  } 
-  else {
+  } else {
     responseBuffer = "{\"status\":\"error\",\"message\":\"Unknown command\"}";
+  }
+}
+
+void TaskRestart(void *pvParameters) {
+
+  while (1) {
+    // setup_bluetooth();
+    // hrBle.loop();
+    bluetooth_init();
+    vTaskDelete(NULL);
+    // vTaskDelay(1 / portTICK_PERIOD_MS);
   }
 }
 
@@ -729,16 +763,18 @@ void setup() {
 
   // Initialize components
   Serial.println("⚙️  Initializing components...\n");
-  
+
   setupLEDs();
   digitalWrite(LED_STATUS, HIGH);
   Serial.println();
-  
+
   setupMotors();
   Serial.println();
-  
+
   setupServos();
   Serial.println();
+
+  xTaskCreatePinnedToCore(TaskRestart, "TaskRestart", 15000, NULL, 1, NULL, 1);
 
   // Initialize I2C Slave
   Wire.begin(I2C_SLAVE_ADDR, I2C_SDA_PIN, I2C_SCL_PIN, 100000);
@@ -746,9 +782,10 @@ void setup() {
   Wire.onRequest(onI2CRequest);
 
   Serial.printf("✅ I2C Slave initialized at address 0x%02X\n", I2C_SLAVE_ADDR);
-  Serial.printf("   SDA: GPIO%d, SCL: GPIO%d, Frequency: 100kHz\n", I2C_SDA_PIN, I2C_SCL_PIN);
+  Serial.printf("   SDA: GPIO%d, SCL: GPIO%d, Frequency: 100kHz\n", I2C_SDA_PIN,
+                I2C_SCL_PIN);
   Serial.println();
-  
+
   Serial.println("⚠️  GPIO Warnings:");
   Serial.println("   - GPIO15 (LED_3): Add 10kΩ pull-up resistor");
   Serial.println("   - GPIO12 (LED_2): Strapping pin, may affect boot");
@@ -767,7 +804,7 @@ void setup() {
     digitalWrite(LED_STATUS, HIGH);
     delay(150);
   }
-  
+
   Serial.println("✅ Initialization complete!\n");
   Serial.println("==========================================\n");
 }
@@ -778,7 +815,7 @@ void loop() {
 
   // Process Serial input for testing
   processSerialInput();
-  
+
   // Process Serial command if received
   if (serialCommandReady) {
     executeTestCommand(serialBuffer);
