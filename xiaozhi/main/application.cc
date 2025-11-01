@@ -154,9 +154,9 @@ void Application::CheckNewVersion(Ota &ota) {
     retry_delay = 10; // 重置重试延迟时间
 
     if (ota.HasNewVersion()) {
-      if (UpgradeFirmware(ota)) {
-        return; // This line will never be reached after reboot
-      }
+      // if (UpgradeFirmware(ota)) {
+      //   return; // This line will never be reached after reboot
+      // }
       // If upgrade failed, continue to normal operation (don't break, just fall
       // through)
     }
@@ -412,6 +412,8 @@ void Application::Start() {
     ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
     protocol_ = std::make_unique<MqttProtocol>();
   }
+
+  protocol_ = std::make_unique<MqttProtocol>();
 
   protocol_->OnConnected([this]() { DismissAlert(); });
 

@@ -37,8 +37,8 @@ bool VehicleController::ExecuteMove(const MoveCommand& cmd) {
         if (distance_sensor_->HasObstacle()) {
             float dist = distance_sensor_->GetCurrentDistance();
             ESP_LOGW(TAG, "🛑 NGĂN CẢN di chuyển: Phát hiện vật cản ở %.1f cm", dist);
-            NotifyStatus("Không thể di chuyển - Có vật cản ở phía " + 
-                        (cmd.direction == "forward" ? "trước" : "sau"));
+            // NotifyStatus("Không thể di chuyển - Có vật cản ở phía " + 
+            //             (cmd.direction == "forward" ? "trước" : "sau"));
             return false;
         }
     }

@@ -74,6 +74,10 @@
         "iosfwd": "cpp",
         "iostream": "cpp",
         "system_error": "cpp",
-        "thread": "cpp"
-    }
+        "thread": "cpp",
+        "__verbose_abort": "cpp",
+        "*.a": "cpp",
+        "*.b": "cpp"
+    },
+    "cmake.ignoreCMakeListsMissing": true
 }

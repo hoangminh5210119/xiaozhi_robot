@@ -43,7 +43,7 @@ set(SOURCES "audio/audio_codec.cc"
             "I2CCommandBridge.cc"
             "DistanceSensor.cc"
             "VehicleController.cc"
-            # "boards/common/esp32_music.cc"
+
             )
 
 set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "protocols")

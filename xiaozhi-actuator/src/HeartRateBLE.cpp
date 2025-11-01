@@ -207,7 +207,7 @@ void HeartRateBLE::ClientCallback::onDisconnect(BLEClient *) {
 // Tự reconnect trong loop
 // =======================================
 void HeartRateBLE::loop() {
-  if (!_connected && _autoReconnect && _retryCount < _maxRetry) {
+  if (!_connected && _autoReconnect) {
     // Kiểm tra địa chỉ hợp lệ trước khi reconnect
     bool validAddr = false;
     for (int i = 0; i < 6; i++) {
