@@ -16,6 +16,7 @@
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_vendor.h>
 #include <esp_log.h>
+#include <esp_spiffs.h>
 #include <wifi_station.h>
 
 #if defined(LCD_TYPE_ILI9341_SERIAL)
@@ -67,6 +68,42 @@ private:
   Button function_button_;
   LcdDisplay *display_;
   Esp32Camera *camera_;
+
+  void MountStorage() {
+    // Mount partition "storage" riêng cho lưu trữ dữ liệu người dùng
+    esp_vfs_spiffs_conf_t storage_conf = {
+        .base_path = "/storage",
+        .partition_label = "storage",
+        .max_files = 5,
+        .format_if_mount_failed = true,
+    };
+    
+    ESP_LOGI(TAG, "📂 Mounting storage partition...");
+    esp_err_t ret = esp_vfs_spiffs_register(&storage_conf);
+    
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "❌ Failed to mount storage partition: %s (0x%x)", 
+               esp_err_to_name(ret), ret);
+      
+      if (ret == ESP_ERR_NOT_FOUND) {
+        ESP_LOGE(TAG, "   → Partition 'storage' not found in partition table!");
+      } else if (ret == ESP_FAIL) {
+        ESP_LOGE(TAG, "   → Failed to format partition (may be corrupted)");
+      } else if (ret == ESP_ERR_NO_MEM) {
+        ESP_LOGE(TAG, "   → Out of memory");
+      }
+    } else {
+      ESP_LOGI(TAG, "✅ Storage partition mounted at /storage");
+      
+      // Verify mount bằng cách check filesystem info
+      size_t total = 0, used = 0;
+      ret = esp_spiffs_info("storage", &total, &used);
+      if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "   📊 SPIFFS: %d KB total, %d KB used, %d KB free", 
+                 total/1024, used/1024, (total-used)/1024);
+      }
+    }
+  }
 
   void InitializeSpi() {
     spi_bus_config_t buscfg = {};
@@ -176,6 +213,7 @@ private:
 public:
   CompactWifiBoardS3Cam()
       : boot_button_(BOOT_BUTTON_GPIO), function_button_(FUNCTION_BUTTON_GPIO) {
+    MountStorage();  // Mount storage partition đầu tiên
     InitializeSpi();
     InitializeLcdDisplay();
     InitializeButtons();

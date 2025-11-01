@@ -5,6 +5,7 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 #include <cstring>
+#include <errno.h>
 
 const char* StorageManager::TAG = "StorageManager";
 
@@ -38,8 +39,13 @@ bool StorageManager::Init(I2CCommandBridge* i2c_bridge) {
     i2c_bridge_ = i2c_bridge;
     initialized_ = true;
     
-    // Load storage data
-    LoadFromFile(storage_file_path_);
+    // Load storage data from file
+    ESP_LOGI(TAG, "📂 Loading storage data from: %s", storage_file_path_.c_str());
+    if (LoadFromFile(storage_file_path_)) {
+        ESP_LOGI(TAG, "✅ Loaded %d items from storage", (int)items_.size());
+    } else {
+        ESP_LOGW(TAG, "⚠️ No previous storage data found, starting fresh");
+    }
     
     ESP_LOGI(TAG, "✅ Storage Manager initialized");
     return true;
@@ -521,23 +527,32 @@ bool StorageManager::SaveToFile(const std::string& filepath) {
         return false;
     }
     
+    // Tạo thư mục nếu chưa tồn tại
+    struct stat st;
+    if (stat("/storage", &st) != 0) {
+        ESP_LOGW(TAG, "⚠️ /storage directory not found, partition may not be mounted!");
+    }
+    
     FILE* f = fopen(file_path.c_str(), "w");
     if (!f) {
-        ESP_LOGE(TAG, "Failed to open file: %s", file_path.c_str());
+        ESP_LOGE(TAG, "❌ Failed to open file for writing: %s (errno: %d, %s)", 
+                 file_path.c_str(), errno, strerror(errno));
         cJSON_free(json_str);
         return false;
     }
     
     size_t written = fwrite(json_str, 1, strlen(json_str), f);
     fclose(f);
-    cJSON_free(json_str);
     
     if (written == 0) {
-        ESP_LOGE(TAG, "Failed to write to file");
+        ESP_LOGE(TAG, "❌ Failed to write to file");
+        cJSON_free(json_str);
         return false;
     }
     
-    ESP_LOGI(TAG, "💾 Saved %d items to file", (int)items_.size());
+    cJSON_free(json_str);
+    
+    ESP_LOGI(TAG, "💾 Saved %d items to: %s (%d bytes)", (int)items_.size(), file_path.c_str(), (int)written);
     return true;
 }
 
@@ -545,19 +560,19 @@ bool StorageManager::LoadFromFile(const std::string& filepath) {
     std::string file_path = filepath.empty() ? storage_file_path_ : filepath;
     
     if (!initialized_ || file_path.empty()) {
-        ESP_LOGW(TAG, "Not initialized or no file path");
+        ESP_LOGW(TAG, "⚠️ Not initialized or no file path");
         return false;
     }
     
     struct stat st;
     if (stat(file_path.c_str(), &st) != 0) {
-        ESP_LOGW(TAG, "Storage file does not exist, starting fresh");
+        ESP_LOGW(TAG, "📂 Storage file does not exist: %s (will create on first save)", file_path.c_str());
         return false;
     }
     
     FILE* f = fopen(file_path.c_str(), "r");
     if (!f) {
-        ESP_LOGE(TAG, "Failed to open file: %s", file_path.c_str());
+        ESP_LOGE(TAG, "❌ Failed to open file: %s", file_path.c_str());
         return false;
     }
     
@@ -567,9 +582,11 @@ bool StorageManager::LoadFromFile(const std::string& filepath) {
     
     if (fsize <= 0) {
         fclose(f);
-        ESP_LOGW(TAG, "File is empty");
+        ESP_LOGW(TAG, "⚠️ File is empty: %s", file_path.c_str());
         return false;
     }
+    
+    ESP_LOGI(TAG, "📖 Reading storage file: %s (%ld bytes)", file_path.c_str(), fsize);
     
     char* json_str = (char*)malloc(fsize + 1);
     size_t read_size = fread(json_str, 1, fsize, f);
@@ -618,7 +635,7 @@ bool StorageManager::LoadFromFile(const std::string& filepath) {
                 hardware_slots_[item.hardware_slot_id].has_item = true;
             }
             
-            ESP_LOGI(TAG, "Loaded: %s at %s", item.name.c_str(), item.location.c_str());
+            ESP_LOGD(TAG, "  ✓ %s at %s", item.name.c_str(), item.location.c_str());
         }
     }
     
@@ -640,7 +657,7 @@ bool StorageManager::LoadFromFile(const std::string& filepath) {
     
     cJSON_Delete(root);
     
-    ESP_LOGI(TAG, "📂 Loaded %d items from file", (int)items_.size());
+    ESP_LOGI(TAG, "✅ Successfully loaded %d items from storage", (int)items_.size());
     return true;
 }
 
