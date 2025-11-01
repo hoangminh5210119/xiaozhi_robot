@@ -37,8 +37,6 @@ bool VehicleController::ExecuteMove(const MoveCommand& cmd) {
         if (distance_sensor_->HasObstacle()) {
             float dist = distance_sensor_->GetCurrentDistance();
             ESP_LOGW(TAG, "🛑 NGĂN CẢN di chuyển: Phát hiện vật cản ở %.1f cm", dist);
-            // NotifyStatus("Không thể di chuyển - Có vật cản ở phía " + 
-            //             (cmd.direction == "forward" ? "trước" : "sau"));
             return false;
         }
     }
@@ -52,16 +50,27 @@ bool VehicleController::ExecuteMove(const MoveCommand& cmd) {
     std::string response;
     bool success = false;
     
-    if (cmd.distance_mm > 0) {
+    // Convert string direction to int constant
+    int direction = DIR_STOP;
+    if (cmd.direction == "forward") direction = DIR_FORWARD;
+    else if (cmd.direction == "backward") direction = DIR_BACKWARD;
+    else if (cmd.direction == "left") direction = DIR_LEFT;
+    else if (cmd.direction == "right") direction = DIR_RIGHT;
+    else if (cmd.direction == "rotate_left") direction = DIR_ROTATE_LEFT;
+    else if (cmd.direction == "rotate_right") direction = DIR_ROTATE_RIGHT;
+    else if (cmd.direction == "stop") direction = DIR_STOP;
+    
+    if (direction == DIR_STOP) {
+        response = i2c_bridge_->VehicleStop();
+    } else if (cmd.distance_mm > 0) {
         // Di chuyển theo khoảng cách
-        response = i2c_bridge_->SendVehicleCommandDistance(cmd.direction, cmd.speed, cmd.distance_mm);
-    } else if (cmd.stop_on_obstacle) {
-        // Di chuyển cho đến khi gặp vật cản
-        response = i2c_bridge_->SendVehicleUntilObstacle(cmd.direction, cmd.speed);
-    } else {
+        response = i2c_bridge_->VehicleMoveDistance(direction, cmd.speed, cmd.distance_mm);
+    } else if (cmd.duration_ms > 0) {
         // Di chuyển theo thời gian
-        int duration = cmd.duration_ms > 0 ? cmd.duration_ms : 1000; // Mặc định 1 giây
-        response = i2c_bridge_->SendVehicleCommand(cmd.direction, cmd.speed, duration);
+        response = i2c_bridge_->VehicleMoveTime(direction, cmd.speed, cmd.duration_ms);
+    } else {
+        // Mặc định di chuyển 1 giây
+        response = i2c_bridge_->VehicleMoveTime(direction, cmd.speed, 1000);
     }
 
     // ========== CRITICAL: Check response and stop if error ==========
@@ -72,7 +81,7 @@ bool VehicleController::ExecuteMove(const MoveCommand& cmd) {
         ESP_LOGI(TAG, "🛑 Sending EMERGENCY STOP command");
         
         // Gửi lệnh STOP ngay lập tức
-        std::string stop_response = i2c_bridge_->SendVehicleCommand("stop", 0, 0);
+        std::string stop_response = i2c_bridge_->VehicleStop();
         ESP_LOGI(TAG, "Stop response: %s", stop_response.c_str());
         
         is_moving_ = false;
@@ -123,7 +132,7 @@ bool VehicleController::Stop() {
     ESP_LOGI(TAG, "Emergency stop");
     is_moving_ = false;
     
-    std::string response = i2c_bridge_->SendVehicleCommand("stop", 0, 0);
+    std::string response = i2c_bridge_->VehicleStop();
     NotifyStatus("Dừng khẩn cấp");
     
     return !response.empty();

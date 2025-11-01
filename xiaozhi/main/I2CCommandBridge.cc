@@ -6,7 +6,9 @@
 static const char* TAG = "I2CCommandBridge";
 
 I2CCommandBridge::I2CCommandBridge() 
-    : initialized_(false), owns_bus_handle_(false), bus_handle_(nullptr), dev_handle_(nullptr) {
+    : initialized_(false), owns_bus_handle_(false), bus_handle_(nullptr), dev_handle_(nullptr),
+      polling_active_(false), polling_interval_ms_(1000), polling_task_handle_(nullptr),
+      status_callback_(nullptr), callback_user_data_(nullptr) {
 }
 
 I2CCommandBridge::~I2CCommandBridge() {
@@ -34,9 +36,9 @@ bool I2CCommandBridge::Init() {
         return false;
     }
 
-    owns_bus_handle_ = true;  // We created the bus, so we own it
+    owns_bus_handle_ = true;
 
-    // Configure I2C device (slave address)
+    // Configure I2C device
     i2c_device_config_t dev_config = {};
     dev_config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
     dev_config.device_address = ACTUATOR_ESP32_ADDR;
@@ -52,7 +54,7 @@ bool I2CCommandBridge::Init() {
     }
 
     initialized_ = true;
-    ESP_LOGI(TAG, "I2C Command Bridge initialized with own bus (SCL=%d, SDA=%d, Slave=0x%02X)", 
+    ESP_LOGI(TAG, "✅ I2C Command Bridge initialized (SCL=%d, SDA=%d, Slave=0x%02X)", 
              I2C_MASTER_SCL_IO, I2C_MASTER_SDA_IO, ACTUATOR_ESP32_ADDR);
     return true;
 }
@@ -69,9 +71,9 @@ bool I2CCommandBridge::InitWithExistingBus(i2c_master_bus_handle_t existing_bus_
     }
 
     bus_handle_ = existing_bus_handle;
-    owns_bus_handle_ = false;  // We don't own this bus
+    owns_bus_handle_ = false;
 
-    // Configure I2C device (slave address)
+    // Configure I2C device
     i2c_device_config_t dev_config = {};
     dev_config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
     dev_config.device_address = ACTUATOR_ESP32_ADDR;
@@ -85,7 +87,7 @@ bool I2CCommandBridge::InitWithExistingBus(i2c_master_bus_handle_t existing_bus_
     }
 
     initialized_ = true;
-    ESP_LOGI(TAG, "I2C Command Bridge initialized with shared bus (Slave=0x%02X)", 
+    ESP_LOGI(TAG, "✅ I2C Command Bridge initialized with shared bus (Slave=0x%02X)", 
              ACTUATOR_ESP32_ADDR);
     return true;
 }
@@ -93,12 +95,14 @@ bool I2CCommandBridge::InitWithExistingBus(i2c_master_bus_handle_t existing_bus_
 void I2CCommandBridge::Deinit() {
     if (!initialized_) return;
 
+    // Stop polling first
+    StopStatusPolling();
+
     if (dev_handle_) {
         i2c_master_bus_rm_device(dev_handle_);
         dev_handle_ = nullptr;
     }
 
-    // Only delete the bus if we own it
     if (bus_handle_ && owns_bus_handle_) {
         i2c_del_master_bus(bus_handle_);
     }
@@ -109,121 +113,145 @@ void I2CCommandBridge::Deinit() {
     ESP_LOGI(TAG, "I2C Command Bridge deinitialized");
 }
 
-std::string I2CCommandBridge::SendVehicleCommand(const std::string& direction, int speed, int duration_ms) {
-    // Check if slave is online first to prevent bus hang
+// ==================== VEHICLE CONTROL ====================
+
+std::string I2CCommandBridge::VehicleMoveTime(int direction, int speed_percent, int duration_ms) {
     if (!IsSlaveOnline()) {
-        ESP_LOGW(TAG, "⚠️ Slave is offline, skipping vehicle command");
-        return "{\"error\":\"slave_offline\",\"status\":\"skipped\"}";
+        ESP_LOGW(TAG, "⚠️ Slave offline, skipping vehicle command");
+        return "{\"error\":\"slave_offline\"}";
     }
     
     cJSON* root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "type", CMD_TYPE_VEHICLE_MOVE);
-    cJSON_AddStringToObject(root, "direction", direction.c_str());
-    cJSON_AddNumberToObject(root, "speed", speed);
-    cJSON_AddNumberToObject(root, "duration_ms", duration_ms);
+    cJSON_AddStringToObject(root, KEY_TYPE, TYPE_VEHICLE);
+    cJSON_AddNumberToObject(root, KEY_DIR, direction);
+    cJSON_AddNumberToObject(root, KEY_SPEED, speed_percent);
+    if (duration_ms > 0) {
+        cJSON_AddNumberToObject(root, KEY_DURATION, duration_ms);
+    }
 
     std::string response = SendI2CCommand(root);
     cJSON_Delete(root);
+    
+    ESP_LOGI(TAG, "🚗 Vehicle: dir=%d speed=%d%% time=%dms → %s", 
+             direction, speed_percent, duration_ms, response.c_str());
+    
     return response;
+}
+
+std::string I2CCommandBridge::VehicleMoveDistance(int direction, int speed_percent, int distance_mm) {
+    if (!IsSlaveOnline()) {
+        ESP_LOGW(TAG, "⚠️ Slave offline, skipping vehicle command");
+        return "{\"error\":\"slave_offline\"}";
+    }
+    
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, KEY_TYPE, TYPE_VEHICLE);
+    cJSON_AddNumberToObject(root, KEY_DIR, direction);
+    cJSON_AddNumberToObject(root, KEY_SPEED, speed_percent);
+    cJSON_AddNumberToObject(root, KEY_DISTANCE, distance_mm);
+
+    std::string response = SendI2CCommand(root);
+    cJSON_Delete(root);
+    
+    ESP_LOGI(TAG, "� Vehicle: dir=%d speed=%d%% dist=%dmm → %s", 
+             direction, speed_percent, distance_mm, response.c_str());
+    
+    return response;
+}
+
+std::string I2CCommandBridge::VehicleStop() {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, KEY_TYPE, TYPE_VEHICLE);
+    cJSON_AddNumberToObject(root, KEY_DIR, DIR_STOP);
+
+    std::string response = SendI2CCommand(root);
+    cJSON_Delete(root);
+    
+    ESP_LOGI(TAG, "🛑 Vehicle: STOP → %s", response.c_str());
+    
+    return response;
+}
+
+// ==================== STORAGE CONTROL ====================
+
+std::string I2CCommandBridge::StorageControl(int slot, int action) {
+    if (!IsSlaveOnline()) {
+        ESP_LOGW(TAG, "⚠️ Slave offline, skipping storage command");
+        return "{\"error\":\"slave_offline\"}";
+    }
+    
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, KEY_TYPE, TYPE_STORAGE);
+    cJSON_AddNumberToObject(root, KEY_SLOT, slot);
+    cJSON_AddNumberToObject(root, KEY_ACTION, action);
+
+    std::string response = SendI2CCommand(root);
+    cJSON_Delete(root);
+    
+    ESP_LOGI(TAG, "� Storage: slot=%d action=%s → %s", 
+             slot, (action == ACT_OPEN ? "OPEN" : "CLOSE"), response.c_str());
+    
+    return response;
+}
+
+std::string I2CCommandBridge::StorageOpen(int slot) {
+    return StorageControl(slot, ACT_OPEN);
+}
+
+std::string I2CCommandBridge::StorageClose(int slot) {
+    return StorageControl(slot, ACT_CLOSE);
+}
+
+// ==================== STATUS ====================
+
+std::string I2CCommandBridge::GetStatus() {
+    if (!IsSlaveOnline()) {
+        ESP_LOGW(TAG, "⚠️ Slave offline, skipping status request");
+        return "{\"error\":\"slave_offline\"}";
+    }
+    
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, KEY_TYPE, TYPE_STATUS);
+
+    std::string response = SendI2CCommand(root);
+    cJSON_Delete(root);
+    
+    ESP_LOGI(TAG, "� Status: %s", response.c_str());
+    
+    return response;
+}
+
+// ==================== LEGACY COMPATIBILITY ====================
+
+std::string I2CCommandBridge::SendVehicleCommand(const std::string& direction, int speed, int duration_ms) {
+    int dir = DIR_STOP;
+    
+    if (direction == "forward") dir = DIR_FORWARD;
+    else if (direction == "backward") dir = DIR_BACKWARD;
+    else if (direction == "left") dir = DIR_LEFT;
+    else if (direction == "right") dir = DIR_RIGHT;
+    else if (direction == "rotate_left") dir = DIR_ROTATE_LEFT;
+    else if (direction == "rotate_right") dir = DIR_ROTATE_RIGHT;
+    else if (direction == "stop") dir = DIR_STOP;
+    
+    if (dir == DIR_STOP) {
+        return VehicleStop();
+    }
+    
+    return VehicleMoveTime(dir, speed, duration_ms);
 }
 
 std::string I2CCommandBridge::SendStorageCommand(int slot, const std::string& action) {
-    // Check if slave is online first to prevent bus hang
-    if (!IsSlaveOnline()) {
-        ESP_LOGW(TAG, "⚠️ Slave is offline, skipping storage command");
-        return "{\"error\":\"slave_offline\",\"status\":\"skipped\"}";
-    }
+    int act = ACT_CLOSE;
     
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "type", CMD_TYPE_STORAGE_CONTROL);
-    cJSON_AddNumberToObject(root, "slot", slot);
-    cJSON_AddStringToObject(root, "action", action.c_str());
-
-    std::string response = SendI2CCommand(root);
-    cJSON_Delete(root);
+    if (action == "open") act = ACT_OPEN;
+    else if (action == "close") act = ACT_CLOSE;
     
-    ESP_LOGI(TAG, "📦 Storage command: slot=%d, action=%s → %s", 
-             slot, action.c_str(), response.c_str());
-    
-    return response;
+    return StorageControl(slot, act);
 }
 
-std::string I2CCommandBridge::GetStatus() {
-    // Check if slave is online first to prevent bus hang
-    if (!IsSlaveOnline()) {
-        ESP_LOGW(TAG, "⚠️ Slave is offline, skipping status request");
-        return "{\"error\":\"slave_offline\",\"status\":\"skipped\"}";
-    }
-    
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "type", CMD_TYPE_GET_STATUS);
+// ==================== I2C COMMUNICATION ====================
 
-    std::string response = SendI2CCommand(root);
-    cJSON_Delete(root);
-    return response;
-}
-
-std::string I2CCommandBridge::SendVehicleCommandDistance(const std::string& direction, int speed, int distance_mm) {
-    // Check if slave is online first to prevent bus hang
-    if (!IsSlaveOnline()) {
-        ESP_LOGW(TAG, "⚠️ Slave is offline, skipping vehicle distance command");
-        return "{\"error\":\"slave_offline\",\"status\":\"skipped\"}";
-    }
-    
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "type", CMD_TYPE_VEHICLE_MOVE);
-    cJSON_AddStringToObject(root, "direction", direction.c_str());
-    cJSON_AddNumberToObject(root, "speed", speed);
-    cJSON_AddNumberToObject(root, "distance_mm", distance_mm);
-
-    std::string response = SendI2CCommand(root);
-    cJSON_Delete(root);
-    
-    ESP_LOGI(TAG, "🚗 Vehicle distance command: %s %dmm speed=%d → %s", 
-             direction.c_str(), distance_mm, speed, response.c_str());
-    
-    return response;
-}
-
-std::string I2CCommandBridge::SendVehicleSequence(const std::vector<std::string>& commands) {
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "type", "vehicle.sequence");
-    
-    cJSON* commandsArray = cJSON_CreateArray();
-    for (const auto& cmd : commands) {
-        cJSON_AddItemToArray(commandsArray, cJSON_CreateString(cmd.c_str()));
-    }
-    cJSON_AddItemToObject(root, "commands", commandsArray);
-
-    std::string response = SendI2CCommand(root);
-    cJSON_Delete(root);
-    
-    ESP_LOGI(TAG, "🚗 Vehicle sequence: %d commands → %s", 
-             (int)commands.size(), response.c_str());
-    
-    return response;
-}
-
-std::string I2CCommandBridge::SendVehicleDefaultMove(const std::string& direction, int speed) {
-    // Mặc định di chuyển 500mm (0.5m)
-    return SendVehicleCommandDistance(direction, speed, 500);
-}
-
-std::string I2CCommandBridge::SendVehicleUntilObstacle(const std::string& direction, int speed) {
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "type", CMD_TYPE_VEHICLE_MOVE);
-    cJSON_AddStringToObject(root, "direction", direction.c_str());
-    cJSON_AddNumberToObject(root, "speed", speed);
-    cJSON_AddBoolToObject(root, "until_obstacle", true);
-
-    std::string response = SendI2CCommand(root);
-    cJSON_Delete(root);
-    
-    ESP_LOGI(TAG, "🚗 Vehicle until obstacle: %s speed=%d → %s", 
-             direction.c_str(), speed, response.c_str());
-    
-    return response;
-}
 
 std::string I2CCommandBridge::SendI2CCommand(cJSON* jsonCmd) {
     if (!initialized_) {
@@ -236,7 +264,7 @@ std::string I2CCommandBridge::SendI2CCommand(cJSON* jsonCmd) {
         return "{\"error\":\"null_command\"}";
     }
 
-    // Convert JSON to string
+    // Convert JSON to compact string
     char* jsonString = cJSON_PrintUnformatted(jsonCmd);
     if (!jsonString) {
         ESP_LOGE(TAG, "Failed to serialize JSON");
@@ -244,83 +272,59 @@ std::string I2CCommandBridge::SendI2CCommand(cJSON* jsonCmd) {
     }
 
     size_t jsonLen = strlen(jsonString);
-    ESP_LOGI(TAG, "Sending I2C command: %s (len=%d)", jsonString, jsonLen);
+    ESP_LOGI(TAG, "📤 Sending: %s (len=%d)", jsonString, jsonLen);
 
-    // ========== SIMPLIFIED PROTOCOL: Send JSON directly (no length prefix) ==========
-    // I2C master_transmit already handles length internally
-    const int SHORT_TIMEOUT_MS = 100;  // Shorter timeout than default
-    
-    // Send JSON data directly
-    esp_err_t err = i2c_master_transmit(dev_handle_, (uint8_t*)jsonString, jsonLen, SHORT_TIMEOUT_MS);
+    // Send JSON directly
+    const int TIMEOUT_MS = 100;
+    esp_err_t err = i2c_master_transmit(dev_handle_, (uint8_t*)jsonString, jsonLen, TIMEOUT_MS);
     free(jsonString);
 
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "⚠️ Failed to send JSON data: %s (slave may be offline)", esp_err_to_name(err));
-        // Don't crash, just return error - display will continue working
-        return "{\"error\":\"i2c_transmit_data_failed\",\"slave_offline\":true}";
+        ESP_LOGW(TAG, "⚠️ Failed to send command: %s", esp_err_to_name(err));
+        return "{\"error\":\"i2c_transmit_failed\",\"slave_offline\":true}";
     }
 
-    vTaskDelay(pdMS_TO_TICKS(50)); // Wait for slave to process
+    // Wait for slave to process
+    vTaskDelay(pdMS_TO_TICKS(50));
 
-    // ========== SIMPLIFIED PROTOCOL: Receive JSON directly (no length prefix) ==========
-    uint8_t responseBuffer[256];  // Smaller buffer to reduce garbage data
+    // Receive response
+    uint8_t responseBuffer[128];
     memset(responseBuffer, 0, sizeof(responseBuffer));
 
-    // Read response - try smaller chunk first (most responses are < 100 bytes)
-    const size_t readSize = 128;  // Read at most 128 bytes
-    err = i2c_master_receive(dev_handle_, responseBuffer, readSize, SHORT_TIMEOUT_MS);
+    err = i2c_master_receive(dev_handle_, responseBuffer, sizeof(responseBuffer), TIMEOUT_MS);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "⚠️ Failed to receive response: %s (slave may be busy)", esp_err_to_name(err));
-        // Return partial success - command was sent but no response
+        ESP_LOGW(TAG, "⚠️ Failed to receive response: %s", esp_err_to_name(err));
         return "{\"status\":\"sent\",\"response\":\"timeout\"}";
     }
 
-    // Find actual response length by looking for closing brace '}' or null terminator
+    // Find JSON end by looking for '}'
     size_t respLength = 0;
-    bool foundEnd = false;
-    
-    for (size_t i = 0; i < readSize; i++) {
+    for (size_t i = 0; i < sizeof(responseBuffer); i++) {
         if (responseBuffer[i] == '}') {
-            // Found end of JSON
-            respLength = i + 1;  // Include the closing brace
-            foundEnd = true;
+            respLength = i + 1;
             break;
         }
         if (responseBuffer[i] == '\0' && i > 0) {
-            // Found null terminator (but not at position 0)
             respLength = i;
-            foundEnd = true;
             break;
         }
     }
-    
-    if (!foundEnd || respLength == 0) {
-        ESP_LOGW(TAG, "⚠️ Invalid response - no JSON found");
+
+    if (respLength == 0 || respLength > 100) {
+        ESP_LOGW(TAG, "⚠️ Invalid response length: %zu", respLength);
         return "{\"error\":\"invalid_response\"}";
     }
 
-    // Validate response length is reasonable
-    if (respLength > 200) {
-        ESP_LOGW(TAG, "⚠️ Response too long (%zu bytes), truncating", respLength);
-        respLength = 200;
-    }
-
-    // Sanitize buffer - replace any non-printable chars (except valid JSON chars)
+    // Sanitize response - replace non-printable chars
     for (size_t i = 0; i < respLength; i++) {
         uint8_t c = responseBuffer[i];
-        // Allow: printable ASCII (0x20-0x7E), newline, tab
-        if (c < 0x20 && c != '\n' && c != '\t' && c != '\r') {
-            responseBuffer[i] = '?';  // Replace invalid chars
-        }
-        if (c > 0x7E) {
-            responseBuffer[i] = '?';  // Replace non-ASCII
+        if ((c < 0x20 && c != '\n' && c != '\t' && c != '\r') || c > 0x7E) {
+            responseBuffer[i] = '?';
         }
     }
 
-    // Null-terminate at the correct position
     responseBuffer[respLength] = '\0';
     
-    // Create string safely - use try-catch to handle any issues
     std::string response;
     try {
         response.assign((char*)responseBuffer, respLength);
@@ -329,20 +333,7 @@ std::string I2CCommandBridge::SendI2CCommand(cJSON* jsonCmd) {
         return "{\"error\":\"string_creation_failed\"}";
     }
     
-    // Log safely - print raw bytes first to debug
-    ESP_LOGI(TAG, "✅ Received response (%zu bytes)", respLength);
-    
-    // Only log content if it looks like valid JSON
-    if (response.length() > 0 && response[0] == '{') {
-        // Truncate log to avoid issues
-        if (response.length() > 100) {
-            ESP_LOGI(TAG, "   Content: %.100s...", response.c_str());
-        } else {
-            ESP_LOGI(TAG, "   Content: %s", response.c_str());
-        }
-    } else {
-        ESP_LOGW(TAG, "   Content: [not JSON]");
-    }
+    ESP_LOGI(TAG, "📥 Response: %s", response.c_str());
 
     return response;
 }
@@ -352,47 +343,159 @@ bool I2CCommandBridge::IsSlaveOnline() {
         return false;
     }
     
-    // Try to probe the slave address with very short timeout
+    // Probe slave with minimal data
     uint8_t dummy = 0;
     esp_err_t err = i2c_master_transmit(dev_handle_, &dummy, 1, 50);
     
-    // ESP_ERR_TIMEOUT or ESP_ERR_NOT_FOUND means slave is offline
-    // ESP_OK or ESP_ERR_INVALID_STATE means slave responded (online)
     bool online = (err == ESP_OK);
     
     if (!online) {
-        ESP_LOGD(TAG, "Slave probe result: %s (offline)", esp_err_to_name(err));
+        ESP_LOGD(TAG, "Slave probe: %s (offline)", esp_err_to_name(err));
     }
     
     return online;
 }
 
-bool I2CCommandBridge::SendRawData(const uint8_t* data, size_t size) {
+// ==================== STATUS CALLBACK & POLLING ====================
+
+void I2CCommandBridge::SetStatusCallback(ActuatorStatusCallback callback, void* user_data) {
+    status_callback_ = callback;
+    callback_user_data_ = user_data;
+    ESP_LOGI(TAG, "Status callback registered");
+}
+
+bool I2CCommandBridge::StartStatusPolling(uint32_t interval_ms) {
     if (!initialized_) {
-        ESP_LOGE(TAG, "I2C not initialized");
+        ESP_LOGE(TAG, "Cannot start polling - not initialized");
         return false;
     }
-
-    esp_err_t err = i2c_master_transmit(dev_handle_, data, size, I2C_MASTER_TIMEOUT_MS);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to send raw data: %s", esp_err_to_name(err));
+    
+    if (polling_active_) {
+        ESP_LOGW(TAG, "Polling already active");
+        return true;
+    }
+    
+    if (!status_callback_) {
+        ESP_LOGW(TAG, "No callback registered, polling will have no effect");
+    }
+    
+    polling_interval_ms_ = interval_ms;
+    polling_active_ = true;
+    
+    // Create FreeRTOS task for polling
+    BaseType_t result = xTaskCreate(
+        StatusPollingTask,
+        "StatusPolling",
+        4096,  // Stack size
+        this,  // Pass 'this' pointer as parameter
+        5,     // Priority
+        &polling_task_handle_
+    );
+    
+    if (result != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create polling task");
+        polling_active_ = false;
         return false;
     }
-
+    
+    ESP_LOGI(TAG, "✅ Status polling started (interval=%dms)", interval_ms);
     return true;
 }
 
-int I2CCommandBridge::ReceiveResponse(uint8_t* buffer, size_t maxSize) {
-    if (!initialized_) {
-        ESP_LOGE(TAG, "I2C not initialized");
-        return -1;
+void I2CCommandBridge::StopStatusPolling() {
+    if (!polling_active_) {
+        return;
     }
-
-    esp_err_t err = i2c_master_receive(dev_handle_, buffer, maxSize, I2C_MASTER_TIMEOUT_MS);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to receive data: %s", esp_err_to_name(err));
-        return -1;
+    
+    polling_active_ = false;
+    
+    // Wait for task to finish
+    if (polling_task_handle_) {
+        vTaskDelay(pdMS_TO_TICKS(100)); // Give task time to exit
+        vTaskDelete(polling_task_handle_);
+        polling_task_handle_ = nullptr;
     }
+    
+    ESP_LOGI(TAG, "Status polling stopped");
+}
 
-    return maxSize;
+void I2CCommandBridge::StatusPollingTask(void* param) {
+    I2CCommandBridge* bridge = static_cast<I2CCommandBridge*>(param);
+    
+    ESP_LOGI(TAG, "📊 Status polling task started");
+    
+    while (bridge->polling_active_) {
+        // Check if slave is online first
+        if (!bridge->IsSlaveOnline()) {
+            ESP_LOGD(TAG, "Slave offline, skipping poll");
+            vTaskDelay(pdMS_TO_TICKS(bridge->polling_interval_ms_));
+            continue;
+        }
+        
+        // Request status
+        std::string response = bridge->GetStatus();
+        
+        // Parse and callback if successful
+        if (response.find("error") == std::string::npos && bridge->status_callback_) {
+            ActuatorStatus status;
+            if (bridge->ParseStatusResponse(response, status)) {
+                bridge->status_callback_(status, bridge->callback_user_data_);
+            }
+        }
+        
+        // Wait for next poll
+        vTaskDelay(pdMS_TO_TICKS(bridge->polling_interval_ms_));
+    }
+    
+    ESP_LOGI(TAG, "📊 Status polling task exiting");
+    vTaskDelete(NULL);
+}
+
+bool I2CCommandBridge::ParseStatusResponse(const std::string& jsonResponse, ActuatorStatus& status) {
+    cJSON* root = cJSON_Parse(jsonResponse.c_str());
+    if (!root) {
+        ESP_LOGW(TAG, "Failed to parse status JSON");
+        return false;
+    }
+    
+    // Parse main fields
+    cJSON* s = cJSON_GetObjectItem(root, "s");
+    cJSON* b = cJSON_GetObjectItem(root, "b");
+    cJSON* c = cJSON_GetObjectItem(root, "c");
+    cJSON* h = cJSON_GetObjectItem(root, "h");
+    cJSON* m = cJSON_GetObjectItem(root, "m");
+    cJSON* v = cJSON_GetObjectItem(root, "v");
+    
+    status.status = s ? s->valueint : -1;
+    status.battery = b ? (float)b->valuedouble : 0.0f;
+    status.ble_connected = c ? (c->valueint == 1) : false;
+    status.heart_rate = h ? h->valueint : 0;
+    status.motor_enabled = m ? (m->valueint == 1) : false;
+    status.is_moving = v ? (v->valueint == 1) : false;
+    
+    // Parse storage array
+    cJSON* storage = cJSON_GetObjectItem(root, "g");
+    if (storage && cJSON_IsArray(storage)) {
+        int count = cJSON_GetArraySize(storage);
+        for (int i = 0; i < count && i < 4; i++) {
+            cJSON* item = cJSON_GetArrayItem(storage, i);
+            if (item) {
+                cJSON* slot = cJSON_GetObjectItem(item, "i");
+                cJSON* state = cJSON_GetObjectItem(item, "o");
+                
+                int slot_num = slot ? slot->valueint : i;
+                if (slot_num >= 0 && slot_num < 4) {
+                    status.storage[slot_num].slot = slot_num;
+                    status.storage[slot_num].is_open = state ? (state->valueint == 1) : false;
+                }
+            }
+        }
+    }
+    
+    cJSON_Delete(root);
+    
+    ESP_LOGD(TAG, "📊 Parsed status: battery=%.1fV, HR=%d, moving=%d, ble=%d", 
+             status.battery, status.heart_rate, status.is_moving, status.ble_connected);
+    
+    return true;
 }

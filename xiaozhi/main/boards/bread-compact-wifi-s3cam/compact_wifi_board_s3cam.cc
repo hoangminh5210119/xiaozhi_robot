@@ -169,13 +169,7 @@ private:
 
     function_button_.OnClick([this]() {
       ESP_LOGD(TAG, "function_button_ button clicked");
-
-      auto codec = GetAudioCodec();
-      auto volume = codec->output_volume() + 10;
-      if (volume > 100) {
-        volume = 100;
-      }
-      codec->SetOutputVolume(volume);
+      // Function button can be used for other purposes
     });
   }
 
@@ -189,6 +183,10 @@ public:
     if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
       GetBacklight()->RestoreBrightness();
     }
+  }
+  
+  virtual ~CompactWifiBoardS3Cam() {
+    // Cleanup
   }
 
   virtual Led *GetLed() override {

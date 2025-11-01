@@ -19,7 +19,45 @@
 #include "oled_display.h"
 #include "settings.h"
 
+#include "I2CCommandBridge.h"
+#include "StorageManager.h"
+#include "VehicleController.h"
+
 #define TAG "MCP"
+
+// Global instances
+static I2CCommandBridge* g_i2c_bridge = nullptr;
+static StorageManager* g_storage_manager = nullptr;
+static VehicleController* g_vehicle_controller = nullptr;
+
+// Initialize hardware controllers
+static void InitializeControllers() {
+    if (!g_i2c_bridge) {
+        g_i2c_bridge = new I2CCommandBridge();
+        if (!g_i2c_bridge->Init()) {
+            ESP_LOGE(TAG, "Failed to initialize I2C bridge");
+            delete g_i2c_bridge;
+            g_i2c_bridge = nullptr;
+            return;
+        }
+        
+        // Start status polling
+        g_i2c_bridge->StartStatusPolling(2000);
+        ESP_LOGI(TAG, "✅ I2C Bridge initialized");
+    }
+    
+    if (!g_storage_manager) {
+        g_storage_manager = &StorageManager::GetInstance();
+        if (g_i2c_bridge && g_storage_manager->Init(g_i2c_bridge)) {
+            ESP_LOGI(TAG, "✅ Storage Manager initialized");
+        }
+    }
+    
+    if (!g_vehicle_controller && g_i2c_bridge) {
+        g_vehicle_controller = new VehicleController(g_i2c_bridge, nullptr);
+        ESP_LOGI(TAG, "✅ Vehicle Controller initialized");
+    }
+}
 
 McpServer::McpServer() {}
 
@@ -272,6 +310,176 @@ void McpServer::AddCommonTools() {
   //                    "hiển thị thất bại\"}";
   //           });
   // }
+
+  // Initialize hardware controllers
+  InitializeControllers();
+
+  // ==================== VEHICLE CONTROL TOOLS ====================
+  if (g_vehicle_controller) {
+    AddTool("vehicle.move",
+            "Di chuyển xe theo hướng và khoảng cách. Sử dụng tool này khi người dùng yêu cầu di chuyển xe.\n"
+            "Hướng di chuyển: 'forward' (tiến), 'backward' (lùi), 'left' (trái), 'right' (phải), 'rotate_left' (xoay trái), 'rotate_right' (xoay phải), 'stop' (dừng).\n"
+            "Args:\n"
+            "  `direction`: Hướng di chuyển (bắt buộc).\n"
+            "  `distance_mm`: Khoảng cách di chuyển tính bằng mm (mặc định 500mm).\n"
+            "  `speed`: Tốc độ 0-100 (mặc định 50).",
+            PropertyList({
+                Property("direction", kPropertyTypeString),
+                Property("distance_mm", kPropertyTypeInteger, 500),
+                Property("speed", kPropertyTypeInteger, 50)
+            }),
+            [](const PropertyList &properties) -> ReturnValue {
+                auto direction = properties["direction"].value<std::string>();
+                int distance_mm = properties["distance_mm"].value<int>();
+                int speed = properties["speed"].value<int>();
+                
+                VehicleController::MoveCommand cmd(direction, speed, distance_mm);
+                if (g_vehicle_controller->ExecuteMove(cmd)) {
+                    return "{\"success\": true, \"message\": \"Xe đang di chuyển " + direction + "\"}";
+                }
+                return "{\"success\": false, \"message\": \"Không thể điều khiển xe\"}";
+            });
+
+    AddTool("vehicle.execute_command",
+            "Thực hiện lệnh di chuyển phức tạp bằng ngôn ngữ tự nhiên. Ví dụ: 'đi tới 1m rẽ phải đi thẳng 500mm'.\n"
+            "Args:\n"
+            "  `command`: Lệnh di chuyển bằng tiếng Việt.",
+            PropertyList({
+                Property("command", kPropertyTypeString)
+            }),
+            [](const PropertyList &properties) -> ReturnValue {
+                auto command = properties["command"].value<std::string>();
+                
+                auto commands = g_vehicle_controller->ParseNaturalCommand(command);
+                if (g_vehicle_controller->ExecuteSequence(commands)) {
+                    return "{\"success\": true, \"message\": \"Đang thực hiện lệnh: " + command + "\"}";
+                }
+                return "{\"success\": false, \"message\": \"Không thể phân tích lệnh\"}";
+            });
+
+    AddTool("vehicle.stop",
+            "Dừng xe ngay lập tức.",
+            PropertyList(),
+            [](const PropertyList &properties) -> ReturnValue {
+                if (g_vehicle_controller->Stop()) {
+                    return "{\"success\": true, \"message\": \"Xe đã dừng\"}";
+                }
+                return "{\"success\": false, \"message\": \"Không thể dừng xe\"}";
+            });
+  }
+
+  // ==================== STORAGE CONTROL TOOLS ====================
+  if (g_storage_manager) {
+    AddTool("storage.open_slot",
+            "Mở ô lưu trữ vật lý (0-3).\n"
+            "Args:\n"
+            "  `slot_id`: Số ô cần mở (0-3).",
+            PropertyList({
+                Property("slot_id", kPropertyTypeInteger, 0, 3)
+            }),
+            [](const PropertyList &properties) -> ReturnValue {
+                int slot_id = properties["slot_id"].value<int>();
+                
+                if (g_storage_manager->OpenHardwareSlot(slot_id)) {
+                    return "{\"success\": true, \"message\": \"Đã mở ô " + std::to_string(slot_id + 1) + "\"}";
+                }
+                return "{\"success\": false, \"message\": \"Không thể mở ô\"}";
+            });
+
+    AddTool("storage.close_slot",
+            "Đóng ô lưu trữ vật lý (0-3).\n"
+            "Args:\n"
+            "  `slot_id`: Số ô cần đóng (0-3).",
+            PropertyList({
+                Property("slot_id", kPropertyTypeInteger, 0, 3)
+            }),
+            [](const PropertyList &properties) -> ReturnValue {
+                int slot_id = properties["slot_id"].value<int>();
+                
+                if (g_storage_manager->CloseHardwareSlot(slot_id)) {
+                    return "{\"success\": true, \"message\": \"Đã đóng ô " + std::to_string(slot_id + 1) + "\"}";
+                }
+                return "{\"success\": false, \"message\": \"Không thể đóng ô\"}";
+            });
+
+    AddTool("storage.store_item",
+            "Lưu thông tin vật phẩm vào storage. Vị trí có thể là ô vật lý (slot_0, slot_1) hoặc vị trí ảo (trên bàn, trong túi).\n"
+            "Args:\n"
+            "  `item_name`: Tên vật phẩm.\n"
+            "  `location`: Vị trí lưu trữ.\n"
+            "  `description`: Mô tả thêm (tùy chọn).",
+            PropertyList({
+                Property("item_name", kPropertyTypeString),
+                Property("location", kPropertyTypeString),
+                Property("description", kPropertyTypeString, "")
+            }),
+            [](const PropertyList &properties) -> ReturnValue {
+                auto item_name = properties["item_name"].value<std::string>();
+                auto location = properties["location"].value<std::string>();
+                auto description = properties["description"].value<std::string>();
+                
+                if (g_storage_manager->StoreItem(item_name, location, description)) {
+                    return "{\"success\": true, \"message\": \"Đã lưu " + item_name + " vào " + location + "\"}";
+                }
+                return "{\"success\": false, \"message\": \"Không thể lưu vật phẩm\"}";
+            });
+
+    AddTool("storage.find_item",
+            "Tìm vị trí của vật phẩm.\n"
+            "Args:\n"
+            "  `item_name`: Tên vật phẩm cần tìm.",
+            PropertyList({
+                Property("item_name", kPropertyTypeString)
+            }),
+            [](const PropertyList &properties) -> ReturnValue {
+                auto item_name = properties["item_name"].value<std::string>();
+                
+                std::string location = g_storage_manager->FindItemLocation(item_name);
+                if (!location.empty()) {
+                    return "{\"success\": true, \"item\": \"" + item_name + "\", \"location\": \"" + location + "\"}";
+                }
+                return "{\"success\": false, \"message\": \"Không tìm thấy " + item_name + "\"}";
+            });
+
+    AddTool("storage.process_command",
+            "Xử lý lệnh lưu trữ bằng ngôn ngữ tự nhiên. Ví dụ: 'để kính vào ô 1', 'kính ở đâu', 'mở ô 2'.\n"
+            "Args:\n"
+            "  `command`: Lệnh bằng tiếng Việt.",
+            PropertyList({
+                Property("command", kPropertyTypeString)
+            }),
+            [](const PropertyList &properties) -> ReturnValue {
+                auto command = properties["command"].value<std::string>();
+                
+                std::string response = g_storage_manager->ProcessNaturalCommand(command);
+                return "{\"success\": true, \"message\": \"" + response + "\"}";
+            });
+
+    AddTool("storage.list_all_items",
+            "Liệt kê tất cả vật phẩm trong storage.",
+            PropertyList(),
+            [](const PropertyList &properties) -> ReturnValue {
+                auto items = g_storage_manager->GetAllItems();
+                
+                cJSON* json = cJSON_CreateObject();
+                cJSON_AddNumberToObject(json, "total", items.size());
+                
+                cJSON* items_array = cJSON_CreateArray();
+                for (const auto& item : items) {
+                    cJSON* item_json = cJSON_CreateObject();
+                    cJSON_AddStringToObject(item_json, "name", item.name.c_str());
+                    cJSON_AddStringToObject(item_json, "location", item.location.c_str());
+                    cJSON_AddBoolToObject(item_json, "is_hardware", item.is_hardware_slot);
+                    if (!item.description.empty()) {
+                        cJSON_AddStringToObject(item_json, "description", item.description.c_str());
+                    }
+                    cJSON_AddItemToArray(items_array, item_json);
+                }
+                cJSON_AddItemToObject(json, "items", items_array);
+                
+                return json;
+            });
+  }
 
   // Restore the original tools list to the end of the tools list
   tools_.insert(tools_.end(), original_tools.begin(), original_tools.end());

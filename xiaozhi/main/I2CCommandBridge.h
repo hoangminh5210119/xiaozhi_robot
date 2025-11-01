@@ -5,43 +5,100 @@
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "cJSON.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 // I2C Configuration (shared with display)
-#define I2C_MASTER_SCL_IO           42      /*!< GPIO number for I2C master clock (shared with display) */
-#define I2C_MASTER_SDA_IO           41      /*!< GPIO number for I2C master data (shared with display) */
-#define I2C_MASTER_FREQ_HZ          100000     /*!< I2C master clock frequency */
+#define I2C_MASTER_SCL_IO           41      /*!< GPIO number for I2C master clock (shared with display) */
+#define I2C_MASTER_SDA_IO           42      /*!< GPIO number for I2C master data (shared with display) */
+#define I2C_MASTER_FREQ_HZ          100000  /*!< I2C master clock frequency */
 #define I2C_MASTER_TIMEOUT_MS       1000
 
 // I2C Slave Address
 #define ACTUATOR_ESP32_ADDR         0x55    /*!< ESP32 actuator I2C address */
 
-// Command Types
-#define CMD_TYPE_VEHICLE_MOVE       "vehicle.move"
-#define CMD_TYPE_STORAGE_CONTROL    "storage.control"
-#define CMD_TYPE_GET_STATUS         "status.get"
+// Command Types (short keys for compact JSON)
+#define KEY_TYPE        "t"      // type
+#define KEY_DIR         "d"      // direction
+#define KEY_SPEED       "p"      // power/speed
+#define KEY_DURATION    "ms"     // milliseconds
+#define KEY_DISTANCE    "mm"     // millimeters
+#define KEY_SLOT        "i"      // slot index
+#define KEY_ACTION      "a"      // action
+
+// Type values
+#define TYPE_VEHICLE    "v"
+#define TYPE_STORAGE    "s"
+#define TYPE_STATUS     "t"
+
+// Direction values
+#define DIR_STOP            0
+#define DIR_FORWARD         1
+#define DIR_BACKWARD        2
+#define DIR_LEFT            3
+#define DIR_RIGHT           4
+#define DIR_ROTATE_LEFT     5
+#define DIR_ROTATE_RIGHT    6
+
+// Action values
+#define ACT_CLOSE       0
+#define ACT_OPEN        1
+
+/**
+ * @brief Status data structure từ actuator
+ */
+struct ActuatorStatus {
+    int status;           // STATUS_OK (1) or STATUS_ERROR (-1)
+    float battery;        // Điện áp pin (V)
+    bool ble_connected;   // BLE kết nối với đồng hồ
+    int heart_rate;       // Nhịp tim từ BLE
+    bool motor_enabled;   // Motor đang được enable
+    bool is_moving;       // Xe đang di chuyển
+    
+    // Storage states (4 slots)
+    struct {
+        int slot;         // Số ô (0-3)
+        bool is_open;     // true = mở, false = đóng
+    } storage[4];
+};
+
+/**
+ * @brief Callback function để nhận status từ actuator
+ * @param status Struct chứa thông tin trạng thái
+ * @param user_data Con trỏ dữ liệu user (optional)
+ */
+typedef void (*ActuatorStatusCallback)(const ActuatorStatus& status, void* user_data);
 
 /**
  * @brief I2C Command Bridge
  * 
  * Gửi lệnh JSON qua I2C từ ESP32 chính (Xiaozhi) sang ESP32 phụ (actuator)
  * 
- * Protocol:
- * - Master (Xiaozhi) gửi JSON string qua I2C
- * - Slave (Actuator) nhận lệnh, thực thi, trả về JSON response
+ * Protocol (compact JSON):
+ * Vehicle (time-based):
+ *   {"t":"v","d":1,"p":50,"ms":2000}  - Forward 50% speed for 2s
+ *   {"t":"v","d":2,"p":60,"ms":1000}  - Backward 60% speed for 1s
+ *   {"t":"v","d":3,"p":40,"ms":1500}  - Left 40% speed for 1.5s
+ *   {"t":"v","d":4,"p":40,"ms":1500}  - Right 40% speed for 1.5s
+ *   {"t":"v","d":5,"p":50,"ms":2000}  - Rotate left 50% for 2s
+ *   {"t":"v","d":6,"p":50,"ms":2000}  - Rotate right 50% for 2s
+ *   {"t":"v","d":0}                   - Stop
  * 
- * JSON Format (Request):
- * {
- *   "type": "vehicle.move",
- *   "direction": "forward",
- *   "speed": 50,
- *   "duration_ms": 1000
- * }
+ * Vehicle (distance-based):
+ *   {"t":"v","d":1,"p":50,"mm":500}   - Forward 500mm at 50% speed
+ *   {"t":"v","d":2,"p":40,"mm":300}   - Backward 300mm at 40% speed
  * 
- * JSON Format (Response):
- * {
- *   "status": "ok",
- *   "message": "Moving forward"
- * }
+ * Storage:
+ *   {"t":"s","i":0,"a":1}             - Open slot 0
+ *   {"t":"s","i":0,"a":0}             - Close slot 0
+ *   {"t":"s","i":1,"a":1}             - Open slot 1
+ * 
+ * Status:
+ *   {"t":"t"}                         - Get status
+ * 
+ * Response format:
+ *   {"s":1}                           - Status OK
+ *   {"s":-1}                          - Status Error
  */
 class I2CCommandBridge {
 public:
@@ -64,55 +121,58 @@ public:
      */
     void Deinit();
 
+    // ==================== VEHICLE CONTROL ====================
+    
     /**
-     * @brief Gửi lệnh điều khiển xe
-     * @param direction forward/backward/left/right/rotate_left/rotate_right/stop
-     * @param speed Tốc độ 0-100
-     * @param duration_ms Thời gian di chuyển (ms), 0 = liên tục
-     * @return JSON response string
+     * @brief Di chuyển theo thời gian
+     * @param direction DIR_FORWARD, DIR_BACKWARD, DIR_LEFT, DIR_RIGHT, DIR_ROTATE_LEFT, DIR_ROTATE_RIGHT, DIR_STOP
+     * @param speed_percent Tốc độ 0-100%
+     * @param duration_ms Thời gian (ms), 0 = dừng
+     * @return JSON response
      */
-    std::string SendVehicleCommand(const std::string& direction, int speed, int duration_ms);
+    std::string VehicleMoveTime(int direction, int speed_percent, int duration_ms);
 
     /**
-     * @brief Gửi lệnh điều khiển xe theo khoảng cách (mm)
-     * @param direction forward/backward/left/right/rotate_left/rotate_right
-     * @param speed Tốc độ 0-100
-     * @param distance_mm Khoảng cách di chuyển (mm)
-     * @return JSON response string
+     * @brief Di chuyển theo khoảng cách
+     * @param direction DIR_FORWARD hoặc DIR_BACKWARD
+     * @param speed_percent Tốc độ 0-100%
+     * @param distance_mm Khoảng cách (mm)
+     * @return JSON response
      */
-    std::string SendVehicleCommandDistance(const std::string& direction, int speed, int distance_mm);
+    std::string VehicleMoveDistance(int direction, int speed_percent, int distance_mm);
 
     /**
-     * @brief Gửi chuỗi lệnh di chuyển phức tạp
-     * @param commands Danh sách lệnh di chuyển
-     * @return JSON response string
+     * @brief Dừng xe ngay lập tức
+     * @return JSON response
      */
-    std::string SendVehicleSequence(const std::vector<std::string>& commands);
+    std::string VehicleStop();
+
+    // ==================== STORAGE CONTROL ====================
+    
+    /**
+     * @brief Mở cửa tủ
+     * @param slot Số ô (0-3)
+     * @return JSON response
+     */
+    std::string StorageOpen(int slot);
 
     /**
-     * @brief Gửi lệnh di chuyển mặc định (0.5m)
-     * @param direction Hướng di chuyển
-     * @param speed Tốc độ (mặc định 50)
-     * @return JSON response string
+     * @brief Đóng cửa tủ
+     * @param slot Số ô (0-3)
+     * @return JSON response
      */
-    std::string SendVehicleDefaultMove(const std::string& direction, int speed = 50);
+    std::string StorageClose(int slot);
 
     /**
-     * @brief Gửi lệnh di chuyển cho đến khi gặp vật cản
-     * @param direction Hướng di chuyển
-     * @param speed Tốc độ (mặc định 30)
-     * @return JSON response string
+     * @brief Điều khiển cửa tủ
+     * @param slot Số ô (0-3)
+     * @param action ACT_OPEN hoặc ACT_CLOSE
+     * @return JSON response
      */
-    std::string SendVehicleUntilObstacle(const std::string& direction, int speed = 30);
+    std::string StorageControl(int slot, int action);
 
-    /**
-     * @brief Gửi lệnh điều khiển tủ đồ (storage)
-     * @param slot Số ô (0-5, internal index)
-     * @param action open/close/led_on/led_off/led_blink
-     * @return JSON response string
-     */
-    std::string SendStorageCommand(int slot, const std::string& action);
-
+    // ==================== STATUS ====================
+    
     /**
      * @brief Lấy trạng thái từ ESP32 phụ
      * @return JSON status string
@@ -125,6 +185,39 @@ public:
      */
     bool IsSlaveOnline();
 
+    // ==================== STATUS CALLBACK ====================
+    
+    /**
+     * @brief Đăng ký callback để nhận status từ actuator
+     * @param callback Hàm callback sẽ được gọi khi nhận status
+     * @param user_data Con trỏ dữ liệu user (optional)
+     */
+    void SetStatusCallback(ActuatorStatusCallback callback, void* user_data = nullptr);
+    
+    /**
+     * @brief Bắt đầu polling status từ actuator với interval
+     * @param interval_ms Khoảng thời gian giữa các lần lấy status (ms)
+     * @return true nếu khởi động thành công
+     */
+    bool StartStatusPolling(uint32_t interval_ms = 1000);
+    
+    /**
+     * @brief Dừng polling status
+     */
+    void StopStatusPolling();
+    
+    /**
+     * @brief Kiểm tra xem polling có đang chạy không
+     * @return true nếu đang polling
+     */
+    bool IsPollingActive() const { return polling_active_; }
+
+    // ==================== LEGACY COMPATIBILITY ====================
+    // Các hàm tương thích với code cũ
+    
+    std::string SendVehicleCommand(const std::string& direction, int speed, int duration_ms);
+    std::string SendStorageCommand(int slot, const std::string& action);
+
 private:
     /**
      * @brief Gửi JSON command qua I2C
@@ -132,25 +225,29 @@ private:
      * @return JSON response string
      */
     std::string SendI2CCommand(cJSON* jsonCmd);
-
+    
     /**
-     * @brief Gửi raw data qua I2C
-     * @param data Con trỏ dữ liệu
-     * @param size Kích thước dữ liệu
-     * @return true nếu thành công
+     * @brief Parse JSON status response thành ActuatorStatus struct
+     * @param jsonResponse JSON string từ actuator
+     * @param status Output struct
+     * @return true nếu parse thành công
      */
-    bool SendRawData(const uint8_t* data, size_t size);
-
+    bool ParseStatusResponse(const std::string& jsonResponse, ActuatorStatus& status);
+    
     /**
-     * @brief Nhận response từ slave
-     * @param buffer Buffer để chứa dữ liệu
-     * @param maxSize Kích thước tối đa
-     * @return Số byte nhận được
+     * @brief FreeRTOS task để polling status
      */
-    int ReceiveResponse(uint8_t* buffer, size_t maxSize);
+    static void StatusPollingTask(void* param);
 
     bool initialized_;
-    bool owns_bus_handle_;  // true if we created the bus, false if using shared bus
+    bool owns_bus_handle_;
     i2c_master_bus_handle_t bus_handle_;
     i2c_master_dev_handle_t dev_handle_;
+    
+    // Status polling
+    bool polling_active_;
+    uint32_t polling_interval_ms_;
+    TaskHandle_t polling_task_handle_;
+    ActuatorStatusCallback status_callback_;
+    void* callback_user_data_;
 };
