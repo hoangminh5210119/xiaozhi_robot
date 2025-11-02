@@ -21,46 +21,47 @@
 #include "settings.h"
 
 #include "I2CCommandBridge.h"
+#include "RecurringSchedule.h"
 #include "StorageManager.h"
 #include "VehicleController.h"
-#include "telegram_manager.h"
-#include "RecurringSchedule.h"
 #include "esp32_camera.h"
+#include "telegram_manager.h"
 
 #define TAG "MCP"
 
-// Global instances
-static I2CCommandBridge* g_i2c_bridge = nullptr;
-static StorageManager* g_storage_manager = nullptr;
-static VehicleController* g_vehicle_controller = nullptr;
+// Global pointers (không cần allocate, chỉ reference đến singleton)
+static I2CCommandBridge *g_i2c_bridge = nullptr;
+static StorageManager *g_storage_manager = nullptr;
+static VehicleController *g_vehicle_controller = nullptr;
 
 // Initialize hardware controllers
 static void InitializeControllers() {
-    if (!g_i2c_bridge) {
-        g_i2c_bridge = new I2CCommandBridge();
-        if (!g_i2c_bridge->Init()) {
-            ESP_LOGE(TAG, "Failed to initialize I2C bridge");
-            delete g_i2c_bridge;
-            g_i2c_bridge = nullptr;
-            return;
-        }
-        
-        // Start status polling
-        g_i2c_bridge->StartStatusPolling(2000);
-        ESP_LOGI(TAG, "✅ I2C Bridge initialized");
+  if (!g_i2c_bridge) {
+    // Lấy reference từ singleton, không tạo instance mới
+    g_i2c_bridge = &I2CCommandBridge::GetInstance();
+
+    if (!g_i2c_bridge->Init()) {
+      ESP_LOGE(TAG, "Failed to initialize I2C bridge");
+      g_i2c_bridge = nullptr; // Không delete vì không phải ta tạo
+      return;
     }
-    
-    if (!g_storage_manager) {
-        g_storage_manager = &StorageManager::GetInstance();
-        if (g_i2c_bridge && g_storage_manager->Init(g_i2c_bridge)) {
-            ESP_LOGI(TAG, "✅ Storage Manager initialized");
-        }
+
+    // Start status polling
+    // g_i2c_bridge->StartStatusPolling(2000);
+    ESP_LOGI(TAG, "✅ I2C Bridge initialized");
+  }
+
+  if (!g_storage_manager) {
+    g_storage_manager = &StorageManager::GetInstance();
+    if (g_i2c_bridge && g_storage_manager->Init(g_i2c_bridge)) {
+      ESP_LOGI(TAG, "✅ Storage Manager initialized");
     }
-    
-    if (!g_vehicle_controller && g_i2c_bridge) {
-        g_vehicle_controller = new VehicleController(g_i2c_bridge, nullptr);
-        ESP_LOGI(TAG, "✅ Vehicle Controller initialized");
-    }
+  }
+
+  if (!g_vehicle_controller && g_i2c_bridge) {
+    g_vehicle_controller = new VehicleController(g_i2c_bridge, nullptr);
+    ESP_LOGI(TAG, "✅ Vehicle Controller initialized");
+  }
 }
 
 McpServer::McpServer() {}
@@ -164,211 +165,64 @@ void McpServer::AddCommonTools() {
   }
 #endif
 
-  //   auto music = board.GetMusic();
-  //   if (music) {
-  //     AddTool(
-  //         "self.music.play_song",
-  //         "播放指定的歌曲。当用户要求播放音乐时使用此工具，会自动获取歌曲详情并开"
-  //         "始流式播放。\n"
-  //         "参数:\n"
-  //         "  `song_name`: 要播放的歌曲名称（必需）。\n"
-  //         "  `artist_name`:
-  //         要播放的歌曲艺术家名称（可选，默认为空字符串）。\n" "返回:\n" "
-  //         播放状态信息，不需确认，立刻播放歌曲。", PropertyList({
-  //             Property("song_name", kPropertyTypeString), // 歌曲名称（必需）
-  //             Property("artist_name", kPropertyTypeString,
-  //                      "") // 艺术家名称（可选，默认为空字符串）
-  //         }),
-  //         [music](const PropertyList &properties) -> ReturnValue {
-  //           auto song_name = properties["song_name"].value<std::string>();
-  //           auto artist_name =
-  //           properties["artist_name"].value<std::string>();
-
-  //           if (!music->Download(song_name, artist_name)) {
-  //             return "{\"success\": false, \"message\":
-  //             \"获取音乐资源失败\"}";
-  //           }
-  //           auto download_result = music->GetDownloadResult();
-  //           ESP_LOGI(TAG, "Music details result: %s",
-  //           download_result.c_str()); return "{\"success\": true,
-  //           \"message\": \"音乐开始播放\"}";
-  //         });
-
-  //     AddTool(
-  //         "self.music.set_display_mode",
-  //         "设置音乐播放时的显示模式。可以选择显示频谱或歌词，比如用户说‘打开频谱’"
-  //         "或者‘显示频谱’，‘打开歌词’或者‘显示歌词’就设置对应的显示模式。\n"
-  //         "参数:\n"
-  //         "  `mode`: 显示模式，可选值为 'spectrum'（频谱）或
-  //         'lyrics'（歌词）。\n" "返回:\n" "  设置结果信息。", PropertyList({
-  //             Property("mode",
-  //                      kPropertyTypeString) // 显示模式: "spectrum" 或
-  //                      "lyrics"
-  //         }),
-  //         [music](const PropertyList &properties) -> ReturnValue {
-  //           auto mode_str = properties["mode"].value<std::string>();
-
-  //           // 转换为小写以便比较
-  //           std::transform(mode_str.begin(), mode_str.end(),
-  //           mode_str.begin(),
-  //                          ::tolower);
-
-  //           if (mode_str == "spectrum" || mode_str == "频谱") {
-  //             // 设置为频谱显示模式
-  //             auto esp32_music = static_cast<Esp32Music *>(music);
-  //             esp32_music->SetDisplayMode(Esp32Music::DISPLAY_MODE_SPECTRUM);
-  //             return "{\"success\": true, \"message\":
-  //             \"已切换到频谱显示模式\"}";
-  //           } else if (mode_str == "lyrics" || mode_str == "歌词") {
-  //             // 设置为歌词显示模式
-  //             auto esp32_music = static_cast<Esp32Music *>(music);
-  //             esp32_music->SetDisplayMode(Esp32Music::DISPLAY_MODE_LYRICS);
-  //             return "{\"success\": true, \"message\":
-  //             \"已切换到歌词显示模式\"}";
-  //           } else {
-  //             return "{\"success\": false, \"message\":
-  //             \"无效的显示模式，请使用 "
-  //                    "'spectrum' 或 'lyrics'\"}";
-  //           }
-
-  //           return "{\"success\": false, \"message\": \"设置显示模式失败\"}";
-  //         });
-  //   }
-
-  // auto music = board.GetMusic();
-  // if (music) {
-  //   AddTool("self.music.play_song",
-  //           "Phát một bài hát cụ thể. Công cụ này được sử dụng khi người dùng "
-  //           "yêu cầu "
-  //           "phát nhạc — hệ thống sẽ tự động lấy thông tin bài hát và bắt đầu "
-  //           "phát luồng.\n"
-  //           "Tham số:\n"
-  //           "  `song_name`: Tên bài hát cần phát (bắt buộc).\n"
-  //           "  `artist_name`: Tên nghệ sĩ (tùy chọn, mặc định là chuỗi rỗng).\n"
-  //           "Kết quả trả về:\n"
-  //           "  Thông tin trạng thái phát nhạc, không cần xác nhận, phát ngay "
-  //           "lập tức.",
-  //           PropertyList({
-  //               Property("song_name",
-  //                        kPropertyTypeString), // Tên bài hát (bắt buộc)
-  //               Property("artist_name", kPropertyTypeString,
-  //                        "") // Nghệ sĩ (tùy chọn, mặc định rỗng)
-  //           }),
-  //           [music](const PropertyList &properties) -> ReturnValue {
-  //             auto song_name = properties["song_name"].value<std::string>();
-  //             auto artist_name = properties["artist_name"].value<std::string>();
-
-  //             if (!music->Download(song_name, artist_name)) {
-  //               return "{\"success\": false, \"message\": \"Không thể tải "
-  //                      "nguồn nhạc\"}";
-  //             }
-  //             auto download_result = music->GetDownloadResult();
-  //             ESP_LOGI(TAG, "Kết quả chi tiết bài nhạc: %s",
-  //                      download_result.c_str());
-  //             return "{\"success\": true, \"message\": \"Đang phát bài hát\"}";
-  //           });
-
-  //   AddTool("self.music.set_display_mode",
-  //           "Thiết lập chế độ hiển thị khi phát nhạc. Có thể chọn hiển thị "
-  //           "dạng phổ âm "
-  //           "(spectrum) hoặc lời bài hát (lyrics). Ví dụ: người dùng nói ‘hiển "
-  //           "thị phổ âm’ "
-  //           "hoặc ‘mở lời bài hát’ thì sẽ chuyển sang chế độ tương ứng.\n"
-  //           "Tham số:\n"
-  //           "  `mode`: Chế độ hiển thị, giá trị hợp lệ là 'spectrum' (phổ âm) "
-  //           "hoặc 'lyrics' (lời bài hát).\n"
-  //           "Kết quả trả về:\n"
-  //           "  Thông tin kết quả thiết lập chế độ hiển thị.",
-  //           PropertyList({
-  //               Property("mode",
-  //                        kPropertyTypeString) // Chế độ hiển thị: "spectrum"
-  //                                             // hoặc "lyrics"
-  //           }),
-  //           [music](const PropertyList &properties) -> ReturnValue {
-  //             auto mode_str = properties["mode"].value<std::string>();
-
-  //             // Chuyển thành chữ thường để so sánh dễ hơn
-  //             std::transform(mode_str.begin(), mode_str.end(), mode_str.begin(),
-  //                            ::tolower);
-
-  //             if (mode_str == "spectrum" || mode_str == "phổ" ||
-  //                 mode_str == "phổ âm") {
-  //               // Đặt chế độ hiển thị phổ âm
-  //               auto esp32_music = static_cast<Esp32Music *>(music);
-  //               esp32_music->SetDisplayMode(Esp32Music::DISPLAY_MODE_SPECTRUM);
-  //               return "{\"success\": true, \"message\": \"Đã chuyển sang chế "
-  //                      "độ hiển thị phổ âm\"}";
-  //             } else if (mode_str == "lyrics" || mode_str == "lời" ||
-  //                        mode_str == "lời bài hát") {
-  //               // Đặt chế độ hiển thị lời bài hát
-  //               auto esp32_music = static_cast<Esp32Music *>(music);
-  //               esp32_music->SetDisplayMode(Esp32Music::DISPLAY_MODE_LYRICS);
-  //               return "{\"success\": true, \"message\": \"Đã chuyển sang chế "
-  //                      "độ hiển thị lời bài hát\"}";
-  //             } else {
-  //               return "{\"success\": false, \"message\": \"Chế độ hiển thị "
-  //                      "không hợp lệ, hãy dùng 'spectrum' hoặc 'lyrics'\"}";
-  //             }
-
-  //             return "{\"success\": false, \"message\": \"Thiết lập chế độ "
-  //                    "hiển thị thất bại\"}";
-  //           });
-  // }
-
   // Initialize hardware controllers
   InitializeControllers();
 
   // ==================== VEHICLE CONTROL TOOLS ====================
   if (g_vehicle_controller) {
     AddTool("vehicle.move",
-            "Di chuyển xe theo hướng và khoảng cách. Sử dụng tool này khi người dùng yêu cầu di chuyển xe.\n"
-            "Hướng di chuyển: 'forward' (tiến), 'backward' (lùi), 'left' (trái), 'right' (phải), 'rotate_left' (xoay trái), 'rotate_right' (xoay phải), 'stop' (dừng).\n"
+            "Di chuyển xe theo hướng và khoảng cách. Sử dụng tool này khi "
+            "người dùng yêu cầu di chuyển xe.\n"
+            "Hướng di chuyển: 'forward' (tiến), 'backward' (lùi), 'left' "
+            "(trái), 'right' (phải), 'rotate_left' (xoay trái), 'rotate_right' "
+            "(xoay phải), 'stop' (dừng).\n"
             "Args:\n"
             "  `direction`: Hướng di chuyển (bắt buộc).\n"
-            "  `distance_mm`: Khoảng cách di chuyển tính bằng mm (mặc định 500mm).\n"
+            "  `distance_mm`: Khoảng cách di chuyển tính bằng mm (mặc định "
+            "500mm).\n"
             "  `speed`: Tốc độ 0-100 (mặc định 50).",
-            PropertyList({
-                Property("direction", kPropertyTypeString),
-                Property("distance_mm", kPropertyTypeInteger, 500),
-                Property("speed", kPropertyTypeInteger, 50)
-            }),
+            PropertyList({Property("direction", kPropertyTypeString),
+                          Property("distance_mm", kPropertyTypeInteger, 500),
+                          Property("speed", kPropertyTypeInteger, 50)}),
             [](const PropertyList &properties) -> ReturnValue {
-                auto direction = properties["direction"].value<std::string>();
-                int distance_mm = properties["distance_mm"].value<int>();
-                int speed = properties["speed"].value<int>();
-                
-                VehicleController::MoveCommand cmd(direction, speed, distance_mm);
-                if (g_vehicle_controller->ExecuteMove(cmd)) {
-                    return "{\"success\": true, \"message\": \"Xe đang di chuyển " + direction + "\"}";
-                }
-                return "{\"success\": false, \"message\": \"Không thể điều khiển xe\"}";
+              auto direction = properties["direction"].value<std::string>();
+              int distance_mm = properties["distance_mm"].value<int>();
+              int speed = properties["speed"].value<int>();
+
+              VehicleController::MoveCommand cmd(direction, speed, distance_mm);
+              if (g_vehicle_controller->ExecuteMove(cmd)) {
+                return "{\"success\": true, \"message\": \"Xe đang di chuyển " +
+                       direction + "\"}";
+              }
+              return "{\"success\": false, \"message\": \"Không thể điều khiển "
+                     "xe\"}";
             });
 
-    AddTool("vehicle.execute_command",
-            "Thực hiện lệnh di chuyển phức tạp bằng ngôn ngữ tự nhiên. Ví dụ: 'đi tới 1m rẽ phải đi thẳng 500mm'.\n"
-            "Args:\n"
-            "  `command`: Lệnh di chuyển bằng tiếng Việt.",
-            PropertyList({
-                Property("command", kPropertyTypeString)
-            }),
-            [](const PropertyList &properties) -> ReturnValue {
-                auto command = properties["command"].value<std::string>();
-                
-                auto commands = g_vehicle_controller->ParseNaturalCommand(command);
-                if (g_vehicle_controller->ExecuteSequence(commands)) {
-                    return "{\"success\": true, \"message\": \"Đang thực hiện lệnh: " + command + "\"}";
-                }
-                return "{\"success\": false, \"message\": \"Không thể phân tích lệnh\"}";
-            });
+    AddTool(
+        "vehicle.execute_command",
+        "Thực hiện lệnh di chuyển phức tạp bằng ngôn ngữ tự nhiên. Ví dụ: 'đi "
+        "tới 1m rẽ phải đi thẳng 500mm'.\n"
+        "Args:\n"
+        "  `command`: Lệnh di chuyển bằng tiếng Việt.",
+        PropertyList({Property("command", kPropertyTypeString)}),
+        [](const PropertyList &properties) -> ReturnValue {
+          auto command = properties["command"].value<std::string>();
 
-    AddTool("vehicle.stop",
-            "Dừng xe ngay lập tức.",
-            PropertyList(),
+          auto commands = g_vehicle_controller->ParseNaturalCommand(command);
+          if (g_vehicle_controller->ExecuteSequence(commands)) {
+            return "{\"success\": true, \"message\": \"Đang thực hiện lệnh: " +
+                   command + "\"}";
+          }
+          return "{\"success\": false, \"message\": \"Không thể phân tích "
+                 "lệnh\"}";
+        });
+
+    AddTool("vehicle.stop", "Dừng xe ngay lập tức.", PropertyList(),
             [](const PropertyList &properties) -> ReturnValue {
-                if (g_vehicle_controller->Stop()) {
-                    return "{\"success\": true, \"message\": \"Xe đã dừng\"}";
-                }
-                return "{\"success\": false, \"message\": \"Không thể dừng xe\"}";
+              if (g_vehicle_controller->Stop()) {
+                return "{\"success\": true, \"message\": \"Xe đã dừng\"}";
+              }
+              return "{\"success\": false, \"message\": \"Không thể dừng xe\"}";
             });
   }
 
@@ -378,288 +232,305 @@ void McpServer::AddCommonTools() {
             "Mở ô lưu trữ vật lý (0-3).\n"
             "Args:\n"
             "  `slot_id`: Số ô cần mở (0-3).",
-            PropertyList({
-                Property("slot_id", kPropertyTypeInteger, 0, 3)
-            }),
+            PropertyList({Property("slot_id", kPropertyTypeInteger, 0, 3)}),
             [](const PropertyList &properties) -> ReturnValue {
-                int slot_id = properties["slot_id"].value<int>();
-                
-                if (g_storage_manager->OpenHardwareSlot(slot_id)) {
-                    return "{\"success\": true, \"message\": \"Đã mở ô " + std::to_string(slot_id + 1) + "\"}";
-                }
-                return "{\"success\": false, \"message\": \"Không thể mở ô\"}";
+              int slot_id = properties["slot_id"].value<int>();
+
+              if (g_storage_manager->OpenHardwareSlot(slot_id)) {
+                return "{\"success\": true, \"message\": \"Đã mở ô " +
+                       std::to_string(slot_id + 1) + "\"}";
+              }
+              return "{\"success\": false, \"message\": \"Không thể mở ô\"}";
             });
 
     AddTool("storage.close_slot",
             "Đóng ô lưu trữ vật lý (0-3).\n"
             "Args:\n"
             "  `slot_id`: Số ô cần đóng (0-3).",
-            PropertyList({
-                Property("slot_id", kPropertyTypeInteger, 0, 3)
-            }),
+            PropertyList({Property("slot_id", kPropertyTypeInteger, 0, 3)}),
             [](const PropertyList &properties) -> ReturnValue {
-                int slot_id = properties["slot_id"].value<int>();
-                
-                if (g_storage_manager->CloseHardwareSlot(slot_id)) {
-                    return "{\"success\": true, \"message\": \"Đã đóng ô " + std::to_string(slot_id + 1) + "\"}";
-                }
-                return "{\"success\": false, \"message\": \"Không thể đóng ô\"}";
+              int slot_id = properties["slot_id"].value<int>();
+
+              if (g_storage_manager->CloseHardwareSlot(slot_id)) {
+                return "{\"success\": true, \"message\": \"Đã đóng ô " +
+                       std::to_string(slot_id + 1) + "\"}";
+              }
+              return "{\"success\": false, \"message\": \"Không thể đóng ô\"}";
             });
 
-    AddTool("storage.store_item",
-            "Lưu thông tin vật phẩm vào storage. Vị trí có thể là ô vật lý (slot_0, slot_1) hoặc vị trí ảo (trên bàn, trong túi).\n"
-            "Args:\n"
-            "  `item_name`: Tên vật phẩm.\n"
-            "  `location`: Vị trí lưu trữ.\n"
-            "  `description`: Mô tả thêm (tùy chọn).",
-            PropertyList({
-                Property("item_name", kPropertyTypeString),
-                Property("location", kPropertyTypeString),
-                Property("description", kPropertyTypeString, "")
-            }),
-            [](const PropertyList &properties) -> ReturnValue {
-                auto item_name = properties["item_name"].value<std::string>();
-                auto location = properties["location"].value<std::string>();
-                auto description = properties["description"].value<std::string>();
-                
-                if (g_storage_manager->StoreItem(item_name, location, description)) {
-                    return "{\"success\": true, \"message\": \"Đã lưu " + item_name + " vào " + location + "\"}";
-                }
-                return "{\"success\": false, \"message\": \"Không thể lưu vật phẩm\"}";
-            });
+    AddTool(
+        "storage.store_item",
+        "Lưu thông tin vật phẩm vào storage. Vị trí có thể là ô vật lý "
+        "(slot_0, slot_1) hoặc vị trí ảo (trên bàn, trong túi).\n"
+        "Args:\n"
+        "  `item_name`: Tên vật phẩm.\n"
+        "  `location`: Vị trí lưu trữ.\n"
+        "  `description`: Mô tả thêm (tùy chọn).",
+        PropertyList({Property("item_name", kPropertyTypeString),
+                      Property("location", kPropertyTypeString),
+                      Property("description", kPropertyTypeString, "")}),
+        [](const PropertyList &properties) -> ReturnValue {
+          auto item_name = properties["item_name"].value<std::string>();
+          auto location = properties["location"].value<std::string>();
+          auto description = properties["description"].value<std::string>();
+
+          if (g_storage_manager->StoreItem(item_name, location, description)) {
+            return "{\"success\": true, \"message\": \"Đã lưu " + item_name +
+                   " vào " + location + "\"}";
+          }
+          return "{\"success\": false, \"message\": \"Không thể lưu vật "
+                 "phẩm\"}";
+        });
 
     AddTool("storage.find_item",
             "Tìm vị trí của vật phẩm.\n"
             "Args:\n"
             "  `item_name`: Tên vật phẩm cần tìm.",
-            PropertyList({
-                Property("item_name", kPropertyTypeString)
-            }),
+            PropertyList({Property("item_name", kPropertyTypeString)}),
             [](const PropertyList &properties) -> ReturnValue {
-                auto item_name = properties["item_name"].value<std::string>();
-                
-                std::string location = g_storage_manager->FindItemLocation(item_name);
-                if (!location.empty()) {
-                    return "{\"success\": true, \"item\": \"" + item_name + "\", \"location\": \"" + location + "\"}";
-                }
-                return "{\"success\": false, \"message\": \"Không tìm thấy " + item_name + "\"}";
+              auto item_name = properties["item_name"].value<std::string>();
+
+              std::string location =
+                  g_storage_manager->FindItemLocation(item_name);
+              if (!location.empty()) {
+                return "{\"success\": true, \"item\": \"" + item_name +
+                       "\", \"location\": \"" + location + "\"}";
+              }
+              return "{\"success\": false, \"message\": \"Không tìm thấy " +
+                     item_name + "\"}";
             });
 
     AddTool("storage.process_command",
-            "Xử lý lệnh lưu trữ bằng ngôn ngữ tự nhiên. Ví dụ: 'để kính vào ô 1', 'kính ở đâu', 'mở ô 2'.\n"
+            "Xử lý lệnh lưu trữ bằng ngôn ngữ tự nhiên. Ví dụ: 'để kính vào ô "
+            "1', 'kính ở đâu', 'mở ô 2'.\n"
             "Args:\n"
             "  `command`: Lệnh bằng tiếng Việt.",
-            PropertyList({
-                Property("command", kPropertyTypeString)
-            }),
+            PropertyList({Property("command", kPropertyTypeString)}),
             [](const PropertyList &properties) -> ReturnValue {
-                auto command = properties["command"].value<std::string>();
-                
-                std::string response = g_storage_manager->ProcessNaturalCommand(command);
-                return "{\"success\": true, \"message\": \"" + response + "\"}";
+              auto command = properties["command"].value<std::string>();
+
+              std::string response =
+                  g_storage_manager->ProcessNaturalCommand(command);
+              return "{\"success\": true, \"message\": \"" + response + "\"}";
             });
 
-    AddTool("storage.list_all_items",
-            "Liệt kê tất cả vật phẩm trong storage.",
-            PropertyList(),
-            [](const PropertyList &properties) -> ReturnValue {
-                auto items = g_storage_manager->GetAllItems();
-                
-                cJSON* json = cJSON_CreateObject();
-                cJSON_AddNumberToObject(json, "total", items.size());
-                
-                cJSON* items_array = cJSON_CreateArray();
-                for (const auto& item : items) {
-                    cJSON* item_json = cJSON_CreateObject();
-                    cJSON_AddStringToObject(item_json, "name", item.name.c_str());
-                    cJSON_AddStringToObject(item_json, "location", item.location.c_str());
-                    cJSON_AddBoolToObject(item_json, "is_hardware", item.is_hardware_slot);
-                    if (!item.description.empty()) {
-                        cJSON_AddStringToObject(item_json, "description", item.description.c_str());
-                    }
-                    cJSON_AddItemToArray(items_array, item_json);
+    AddTool("storage.list_all_items", "Liệt kê tất cả vật phẩm trong storage.",
+            PropertyList(), [](const PropertyList &properties) -> ReturnValue {
+              auto items = g_storage_manager->GetAllItems();
+
+              cJSON *json = cJSON_CreateObject();
+              cJSON_AddNumberToObject(json, "total", items.size());
+
+              cJSON *items_array = cJSON_CreateArray();
+              for (const auto &item : items) {
+                cJSON *item_json = cJSON_CreateObject();
+                cJSON_AddStringToObject(item_json, "name", item.name.c_str());
+                cJSON_AddStringToObject(item_json, "location",
+                                        item.location.c_str());
+                cJSON_AddBoolToObject(item_json, "is_hardware",
+                                      item.is_hardware_slot);
+                if (!item.description.empty()) {
+                  cJSON_AddStringToObject(item_json, "description",
+                                          item.description.c_str());
                 }
-                cJSON_AddItemToObject(json, "items", items_array);
-                
-                return json;
+                cJSON_AddItemToArray(items_array, item_json);
+              }
+              cJSON_AddItemToObject(json, "items", items_array);
+
+              return json;
             });
-    
+
     // ==================== SMART STORAGE WORKFLOW TOOLS ====================
-    
-    AddTool("storage.smart_store",
-            "🤖 THÔNG MINH: Tự động tìm ô trống, mở cửa để user bỏ đồ vào.\n"
-            "⚠️ QUAN TRỌNG: User đếm từ 1-4, hệ thống internal dùng 0-3.\n"
-            "Use case: User nói 'để điện thoại vào', 'cất ví', 'bỏ kính vào tủ'\n"
-            "Workflow:\n"
-            "1. Kiểm tra tủ có đầy không\n"
-            "2. Tìm ô trống đầu tiên\n"
-            "3. Mở cửa ô đó\n"
-            "4. Lưu thông tin tạm: đang chờ user bỏ đồ vào\n"
-            "5. Trả về message với số ô THEO USER (1-4)\n"
-            "Args:\n"
-            "  `item_name`: Tên đồ vật cần cất (VD: 'điện thoại', 'kính', 'ví').",
-            PropertyList({
-                Property("item_name", kPropertyTypeString)
-            }),
-            [](const PropertyList &properties) -> ReturnValue {
-                auto item_name = properties["item_name"].value<std::string>();
-                
-                // 1. Kiểm tra tủ có ô trống không
-                int internal_slot = -1; // 0-3
-                for (int i = 0; i < 4; i++) {
-                    auto hw_slot = g_storage_manager->GetHardwareSlot(i);
-                    if (hw_slot && !hw_slot->has_item) {
-                        internal_slot = i;
-                        break;
-                    }
-                }
-                
-                if (internal_slot == -1) {
-                    return "{\"success\": false, \"message\": \"Tủ đã đầy, không còn ô trống. Vui lòng lấy đồ ra trước.\"}";
-                }
-                
-                int user_slot = internal_slot + 1; // Convert 0-3 to 1-4
-                
-                // 2. Mở cửa ô trống
-                if (!g_storage_manager->OpenHardwareSlot(internal_slot)) {
-                    return "{\"success\": false, \"message\": \"Không thể mở cửa ô " + std::to_string(user_slot) + "\"}";
-                }
-                
-                // 3. Lưu thông tin tạm
-                g_storage_manager->SetPendingItem(internal_slot, item_name);
-                
-                // 4. Trả về message với số ô theo user (1-4)
-                cJSON* json = cJSON_CreateObject();
-                cJSON_AddBoolToObject(json, "success", true);
-                cJSON_AddNumberToObject(json, "slot_number", user_slot); // 1-4 for user
-                cJSON_AddStringToObject(json, "item_name", item_name.c_str());
-                cJSON_AddStringToObject(json, "message", 
-                    ("Đã mở ô số " + std::to_string(user_slot) + ". Vui lòng bỏ " + item_name + " vào rồi nói 'đóng cửa'.").c_str());
-                cJSON_AddStringToObject(json, "status", "waiting_for_item");
-                
-                return json;
-            });
-    
-    AddTool("storage.smart_close",
-            "🤖 THÔNG MINH: Đóng cửa ô đang mở và lưu thông tin đồ vật.\n"
-            "⚠️ QUAN TRỌNG: Trả về số ô THEO USER (1-4).\n"
-            "Use case: User vừa bỏ đồ vào ô đang mở, nói 'đóng cửa', 'đóng lại'\n"
-            "Workflow:\n"
-            "1. Tìm ô nào đang mở (is_open=true)\n"
-            "2. Đóng cửa ô đó\n"
-            "3. Lưu thông tin item vào ô (nếu có pending_item)\n"
-            "4. Clear pending state\n"
-            "Không cần tham số đầu vào.",
-            PropertyList(),
-            [](const PropertyList &properties) -> ReturnValue {
-                // 1. Tìm ô đang mở (internal 0-3)
-                int internal_slot = -1;
-                std::string pending_item = "";
-                
-                for (int i = 0; i < 4; i++) {
-                    auto hw_slot = g_storage_manager->GetHardwareSlot(i);
-                    if (hw_slot && hw_slot->is_open) {
-                        internal_slot = i;
-                        pending_item = g_storage_manager->GetPendingItem(i);
-                        break;
-                    }
-                }
-                
-                if (internal_slot == -1) {
-                    return "{\"success\": false, \"message\": \"Không có ô nào đang mở cả.\"}";
-                }
-                
-                int user_slot = internal_slot + 1; // Convert 0-3 to 1-4
-                
-                // 2. Đóng cửa
-                if (!g_storage_manager->CloseHardwareSlot(internal_slot)) {
-                    return "{\"success\": false, \"message\": \"Không thể đóng cửa ô " + std::to_string(user_slot) + "\"}";
-                }
-                
-                // 3. Lưu thông tin item (nếu có)
-                std::string message;
-                if (!pending_item.empty()) {
-                    std::string location = "slot_" + std::to_string(internal_slot);
-                    g_storage_manager->StoreItem(pending_item, location, "");
-                    g_storage_manager->ClearPendingItem(internal_slot);
-                    message = "Đã đóng ô số " + std::to_string(user_slot) + " và lưu " + pending_item + ".";
-                } else {
-                    message = "Đã đóng ô số " + std::to_string(user_slot) + ".";
-                }
-                
-                cJSON* json = cJSON_CreateObject();
-                cJSON_AddBoolToObject(json, "success", true);
-                cJSON_AddNumberToObject(json, "slot_number", user_slot); // 1-4 for user
-                if (!pending_item.empty()) {
-                    cJSON_AddStringToObject(json, "item_stored", pending_item.c_str());
-                }
-                cJSON_AddStringToObject(json, "message", message.c_str());
-                
-                return json;
-            });
-    
-    AddTool("storage.smart_retrieve",
-            "🤖 THÔNG MINH: Tự động tìm đồ và mở cửa ô chứa đồ đó.\n"
-            "⚠️ QUAN TRỌNG: Trả về số ô THEO USER (1-4).\n"
-            "Use case: User nói 'lấy điện thoại ra', 'lấy ví', 'mở tủ lấy kính'\n"
-            "Workflow:\n"
-            "1. Tìm vị trí của item\n"
-            "2. Nếu là ô vật lý → Mở cửa ô đó, trả về số ô 1-4\n"
-            "3. Nếu là vị trí ảo → Chỉ thông báo vị trí\n"
-            "Args:\n"
-            "  `item_name`: Tên đồ vật cần lấy.",
-            PropertyList({
-                Property("item_name", kPropertyTypeString)
-            }),
-            [](const PropertyList &properties) -> ReturnValue {
-                auto item_name = properties["item_name"].value<std::string>();
-                
-                // 1. Tìm vị trí item
-                std::string location = g_storage_manager->FindItemLocation(item_name);
-                if (location.empty()) {
-                    return "{\"success\": false, \"message\": \"Không tìm thấy " + item_name + " trong tủ.\"}";
-                }
-                
-                // 2. Kiểm tra xem có phải ô vật lý không
-                if (location.find("slot_") == 0) {
-                    // Parse internal slot_id từ "slot_0", "slot_1", etc. (0-3)
-                    int internal_slot = std::stoi(location.substr(5));
-                    int user_slot = internal_slot + 1; // Convert 0-3 to 1-4
-                    
-                    // Mở cửa ô
-                    if (!g_storage_manager->OpenHardwareSlot(internal_slot)) {
-                        return "{\"success\": false, \"message\": \"Không thể mở ô " + std::to_string(user_slot) + "\"}";
-                    }
-                    
-                    // Xóa item khỏi storage (user đã lấy ra)
-                    g_storage_manager->RemoveItem(item_name);
-                    
-                    cJSON* json = cJSON_CreateObject();
-                    cJSON_AddBoolToObject(json, "success", true);
-                    cJSON_AddNumberToObject(json, "slot_number", user_slot); // 1-4 for user
-                    cJSON_AddStringToObject(json, "item_name", item_name.c_str());
-                    cJSON_AddStringToObject(json, "message", 
-                        ("Đã mở ô số " + std::to_string(user_slot) + " để lấy " + item_name + ". Nhớ nói 'đóng cửa' sau khi lấy xong.").c_str());
-                    cJSON_AddStringToObject(json, "action", "opened_hardware_slot");
-                    
-                    return json;
-                } else {
-                    // Vị trí ảo, chỉ thông báo
-                    cJSON* json = cJSON_CreateObject();
-                    cJSON_AddBoolToObject(json, "success", true);
-                    cJSON_AddStringToObject(json, "item_name", item_name.c_str());
-                    cJSON_AddStringToObject(json, "location", location.c_str());
-                    cJSON_AddStringToObject(json, "message", 
-                        (item_name + " đang ở " + location + ".").c_str());
-                    cJSON_AddStringToObject(json, "action", "virtual_location_info");
-                    
-                    return json;
-                }
-            });
+
+    AddTool(
+        "storage.smart_store",
+        "🤖 THÔNG MINH: Tự động tìm ô trống, mở cửa để user bỏ đồ vào.\n"
+        "⚠️ QUAN TRỌNG: User đếm từ 1-4, hệ thống internal dùng 0-3.\n"
+        "Use case: User nói 'để điện thoại vào', 'cất ví', 'bỏ kính vào tủ'\n"
+        "Workflow:\n"
+        "1. Kiểm tra tủ có đầy không\n"
+        "2. Tìm ô trống đầu tiên\n"
+        "3. Mở cửa ô đó\n"
+        "4. Lưu thông tin tạm: đang chờ user bỏ đồ vào\n"
+        "5. Trả về message với số ô THEO USER (1-4)\n"
+        "Args:\n"
+        "  `item_name`: Tên đồ vật cần cất (VD: 'điện thoại', 'kính', 'ví').",
+        PropertyList({Property("item_name", kPropertyTypeString)}),
+        [](const PropertyList &properties) -> ReturnValue {
+          auto item_name = properties["item_name"].value<std::string>();
+
+          // 1. Kiểm tra tủ có ô trống không
+          int internal_slot = -1; // 0-3
+          for (int i = 0; i < 4; i++) {
+            auto hw_slot = g_storage_manager->GetHardwareSlot(i);
+            if (hw_slot && !hw_slot->has_item) {
+              internal_slot = i;
+              break;
+            }
+          }
+
+          if (internal_slot == -1) {
+            return "{\"success\": false, \"message\": \"Tủ đã đầy, không còn ô "
+                   "trống. Vui lòng lấy đồ ra trước.\"}";
+          }
+
+          int user_slot = internal_slot + 1; // Convert 0-3 to 1-4
+
+          // 2. Mở cửa ô trống
+          if (!g_storage_manager->OpenHardwareSlot(internal_slot)) {
+            return "{\"success\": false, \"message\": \"Không thể mở cửa ô " +
+                   std::to_string(user_slot) + "\"}";
+          }
+
+          // 3. Lưu thông tin tạm
+          g_storage_manager->SetPendingItem(internal_slot, item_name);
+
+          // 4. Trả về message với số ô theo user (1-4)
+          cJSON *json = cJSON_CreateObject();
+          cJSON_AddBoolToObject(json, "success", true);
+          cJSON_AddNumberToObject(json, "slot_number",
+                                  user_slot); // 1-4 for user
+          cJSON_AddStringToObject(json, "item_name", item_name.c_str());
+          cJSON_AddStringToObject(json, "message",
+                                  ("Đã mở ô số " + std::to_string(user_slot) +
+                                   ". Vui lòng bỏ " + item_name +
+                                   " vào rồi nói 'đóng cửa'.")
+                                      .c_str());
+          cJSON_AddStringToObject(json, "status", "waiting_for_item");
+
+          return json;
+        });
+
+    AddTool(
+        "storage.smart_close",
+        "🤖 THÔNG MINH: Đóng cửa ô đang mở và lưu thông tin đồ vật.\n"
+        "⚠️ QUAN TRỌNG: Trả về số ô THEO USER (1-4).\n"
+        "Use case: User vừa bỏ đồ vào ô đang mở, nói 'đóng cửa', 'đóng lại'\n"
+        "Workflow:\n"
+        "1. Tìm ô nào đang mở (is_open=true)\n"
+        "2. Đóng cửa ô đó\n"
+        "3. Lưu thông tin item vào ô (nếu có pending_item)\n"
+        "4. Clear pending state\n"
+        "Không cần tham số đầu vào.",
+        PropertyList(), [](const PropertyList &properties) -> ReturnValue {
+          // 1. Tìm ô đang mở (internal 0-3)
+          int internal_slot = -1;
+          std::string pending_item = "";
+
+          for (int i = 0; i < 4; i++) {
+            auto hw_slot = g_storage_manager->GetHardwareSlot(i);
+            if (hw_slot && hw_slot->is_open) {
+              internal_slot = i;
+              pending_item = g_storage_manager->GetPendingItem(i);
+              break;
+            }
+          }
+
+          if (internal_slot == -1) {
+            return "{\"success\": false, \"message\": \"Không có ô nào đang mở "
+                   "cả.\"}";
+          }
+
+          int user_slot = internal_slot + 1; // Convert 0-3 to 1-4
+
+          // 2. Đóng cửa
+          if (!g_storage_manager->CloseHardwareSlot(internal_slot)) {
+            return "{\"success\": false, \"message\": \"Không thể đóng cửa ô " +
+                   std::to_string(user_slot) + "\"}";
+          }
+
+          // 3. Lưu thông tin item (nếu có)
+          std::string message;
+          if (!pending_item.empty()) {
+            std::string location = "slot_" + std::to_string(internal_slot);
+            g_storage_manager->StoreItem(pending_item, location, "");
+            g_storage_manager->ClearPendingItem(internal_slot);
+            message = "Đã đóng ô số " + std::to_string(user_slot) + " và lưu " +
+                      pending_item + ".";
+          } else {
+            message = "Đã đóng ô số " + std::to_string(user_slot) + ".";
+          }
+
+          cJSON *json = cJSON_CreateObject();
+          cJSON_AddBoolToObject(json, "success", true);
+          cJSON_AddNumberToObject(json, "slot_number",
+                                  user_slot); // 1-4 for user
+          if (!pending_item.empty()) {
+            cJSON_AddStringToObject(json, "item_stored", pending_item.c_str());
+          }
+          cJSON_AddStringToObject(json, "message", message.c_str());
+
+          return json;
+        });
+
+    AddTool(
+        "storage.smart_retrieve",
+        "🤖 THÔNG MINH: Tự động tìm đồ và mở cửa ô chứa đồ đó.\n"
+        "⚠️ QUAN TRỌNG: Trả về số ô THEO USER (1-4).\n"
+        "Use case: User nói 'lấy điện thoại ra', 'lấy ví', 'mở tủ lấy kính'\n"
+        "Workflow:\n"
+        "1. Tìm vị trí của item\n"
+        "2. Nếu là ô vật lý → Mở cửa ô đó, trả về số ô 1-4\n"
+        "3. Nếu là vị trí ảo → Chỉ thông báo vị trí\n"
+        "Args:\n"
+        "  `item_name`: Tên đồ vật cần lấy.",
+        PropertyList({Property("item_name", kPropertyTypeString)}),
+        [](const PropertyList &properties) -> ReturnValue {
+          auto item_name = properties["item_name"].value<std::string>();
+
+          // 1. Tìm vị trí item
+          std::string location = g_storage_manager->FindItemLocation(item_name);
+          if (location.empty()) {
+            return "{\"success\": false, \"message\": \"Không tìm thấy " +
+                   item_name + " trong tủ.\"}";
+          }
+
+          // 2. Kiểm tra xem có phải ô vật lý không
+          if (location.find("slot_") == 0) {
+            // Parse internal slot_id từ "slot_0", "slot_1", etc. (0-3)
+            int internal_slot = std::stoi(location.substr(5));
+            int user_slot = internal_slot + 1; // Convert 0-3 to 1-4
+
+            // Mở cửa ô
+            if (!g_storage_manager->OpenHardwareSlot(internal_slot)) {
+              return "{\"success\": false, \"message\": \"Không thể mở ô " +
+                     std::to_string(user_slot) + "\"}";
+            }
+
+            // Xóa item khỏi storage (user đã lấy ra)
+            g_storage_manager->RemoveItem(item_name);
+
+            cJSON *json = cJSON_CreateObject();
+            cJSON_AddBoolToObject(json, "success", true);
+            cJSON_AddNumberToObject(json, "slot_number",
+                                    user_slot); // 1-4 for user
+            cJSON_AddStringToObject(json, "item_name", item_name.c_str());
+            cJSON_AddStringToObject(json, "message",
+                                    ("Đã mở ô số " + std::to_string(user_slot) +
+                                     " để lấy " + item_name +
+                                     ". Nhớ nói 'đóng cửa' sau khi lấy xong.")
+                                        .c_str());
+            cJSON_AddStringToObject(json, "action", "opened_hardware_slot");
+
+            return json;
+          } else {
+            // Vị trí ảo, chỉ thông báo
+            cJSON *json = cJSON_CreateObject();
+            cJSON_AddBoolToObject(json, "success", true);
+            cJSON_AddStringToObject(json, "item_name", item_name.c_str());
+            cJSON_AddStringToObject(json, "location", location.c_str());
+            cJSON_AddStringToObject(
+                json, "message",
+                (item_name + " đang ở " + location + ".").c_str());
+            cJSON_AddStringToObject(json, "action", "virtual_location_info");
+
+            return json;
+          }
+        });
   }
 
   // ==================== TELEGRAM & SCHEDULE TOOLS ====================
-  
+
   // Reuse board and camera from above (already declared at line 83, 143)
   if (camera) {
     AddTool("telegram.send_photo",
@@ -668,181 +539,275 @@ void McpServer::AddCommonTools() {
             "Không cần tham số, hệ thống tự động chụp và gửi.",
             PropertyList(),
             [camera](const PropertyList &properties) -> ReturnValue {
-                auto &app = Application::GetInstance();
-                
-                // Cast to Esp32Camera to access SendPhotoToTelegram
-                auto esp32_camera = dynamic_cast<Esp32Camera*>(camera);
-                if (!esp32_camera) {
-                    return "{\"success\": false, \"message\": \"Camera không hỗ trợ gửi ảnh qua Telegram\"}";
+              auto &app = Application::GetInstance();
+
+              // Cast to Esp32Camera to access SendPhotoToTelegram
+              auto esp32_camera = dynamic_cast<Esp32Camera *>(camera);
+              if (!esp32_camera) {
+                return "{\"success\": false, \"message\": \"Camera không hỗ "
+                       "trợ gửi ảnh qua Telegram\"}";
+              }
+
+              app.Schedule([esp32_camera]() {
+                if (!esp32_camera->Capture()) {
+                  ESP_LOGE(TAG, "Failed to capture photo");
+                  return;
                 }
-                
-                app.Schedule([esp32_camera]() {
-                    if (!esp32_camera->Capture()) {
-                        ESP_LOGE(TAG, "Failed to capture photo");
-                        return;
-                    }
-                    
-                    ESP_LOGI(TAG, "Captured photo, sending to Telegram...");
-                    TelegramPhotoInfo info;
-                    
-                    auto &telegram_manager = TelegramManager::GetInstance();
-                    auto config = telegram_manager.GetConfig();
-                    
-                    info.caption = "";
-                    info.parse_mode = "";
-                    
-                    if (!config.chat_id.empty() && !config.bot_token.empty()) {
-                        ESP_LOGI(TAG, "Loaded bot token from TelegramManager");
-                        info.bot_token = config.bot_token;
-                        info.chat_id = config.chat_id;
-                        
-                        esp32_camera->SendPhotoToTelegram(info);
-                    } else {
-                        ESP_LOGW(TAG, "Telegram bot not configured");
-                    }
-                });
-                
-                return "{\"success\": true, \"message\": \"Đang chụp và gửi ảnh qua Telegram...\"}";
+
+                ESP_LOGI(TAG, "Captured photo, sending to Telegram...");
+                TelegramPhotoInfo info;
+
+                auto &telegram_manager = TelegramManager::GetInstance();
+                auto config = telegram_manager.GetConfig();
+
+                info.caption = "";
+                info.parse_mode = "";
+
+                if (!config.chat_id.empty() && !config.bot_token.empty()) {
+                  ESP_LOGI(TAG, "Loaded bot token from TelegramManager");
+                  info.bot_token = config.bot_token;
+                  info.chat_id = config.chat_id;
+
+                  esp32_camera->SendPhotoToTelegram(info);
+                } else {
+                  ESP_LOGW(TAG, "Telegram bot not configured");
+                }
+              });
+
+              return "{\"success\": true, \"message\": \"Đang chụp và gửi ảnh "
+                     "qua Telegram...\"}";
             });
-    
+
     AddTool("telegram.send_message",
             "💬 Gửi tin nhắn text qua Telegram.\n"
             "Args:\n"
             "  `message`: Nội dung tin nhắn (hỗ trợ tiếng Việt và emoji).",
-            PropertyList({
-                Property("message", kPropertyTypeString)
-            }),
+            PropertyList({Property("message", kPropertyTypeString)}),
             [](const PropertyList &properties) -> ReturnValue {
-                auto message = properties["message"].value<std::string>();
-                auto &app = Application::GetInstance();
-                
-                // app.Schedule([message]() {
-                    auto &telegram_manager = TelegramManager::GetInstance();
-                    auto config = telegram_manager.GetConfig();
-                    
-                    if (!config.chat_id.empty() && !config.bot_token.empty()) {
-                        ESP_LOGI(TAG, "Sending message to Telegram: %s", message.c_str());
-                        // TODO: Implement telegram_manager.SendMessage() method
-                        // telegram_manager.SendMessage(message);
-                        auto app = &Application::GetInstance();
-                        app->SendTelegramMessage(message);
+              auto message = properties["message"].value<std::string>();
 
-                    } else {
-                        ESP_LOGW(TAG, "Telegram bot not configured");
-                    }
-                // });
-                
-                return "{\"success\": true, \"message\": \"Đang gửi tin nhắn qua Telegram...\"}";
+              // app.Schedule([message]() {
+              auto &telegram_manager = TelegramManager::GetInstance();
+              auto config = telegram_manager.GetConfig();
+
+              if (!config.chat_id.empty() && !config.bot_token.empty()) {
+                ESP_LOGI(TAG, "Sending message to Telegram: %s",
+                         message.c_str());
+                // TODO: Implement telegram_manager.SendMessage() method
+                // telegram_manager.SendMessage(message);
+                auto &app = Application::GetInstance();
+                app.SendTelegramMessage(message);
+
+              } else {
+                ESP_LOGW(TAG, "Telegram bot not configured");
+              }
+              // });
+
+              return "{\"success\": true, \"message\": \"Đang gửi tin nhắn qua "
+                     "Telegram...\"}";
             });
   }
-  
+
   // ==================== RECURRING SCHEDULE TOOLS ====================
-  
+
   AddTool("schedule.add_reminder",
           "⏰ ĐẶT LỊCH NHẮC NHỞ sau một khoảng thời gian.\n"
           "Use case: 'Nhắc tôi sau 30 giây', 'Đặt lịch 5 phút nữa'\n"
           "Args:\n"
           "  `seconds`: Số giây delay từ bây giờ (VD: 30, 300, 7200)\n"
           "  `message`: Nội dung nhắc nhở sẽ được phát ra.",
-          PropertyList({
-              Property("seconds", kPropertyTypeInteger, 1, 86400), // 1 sec to 24 hours
-              Property("message", kPropertyTypeString)
-          }),
+          PropertyList({Property("seconds", kPropertyTypeInteger, 1,
+                                 86400), // 1 sec to 24 hours
+                        Property("message", kPropertyTypeString)}),
           [](const PropertyList &properties) -> ReturnValue {
-              int delay = properties["seconds"].value<int>();
-              auto message = properties["message"].value<std::string>();
-              
-              auto &app = Application::GetInstance();
-              auto &scheduler = RecurringSchedule::GetInstance();
-              
-              // Generate unique ID based on timestamp
-              int id = (int)(esp_timer_get_time() / 1000);
-              
-              ESP_LOGI(TAG, "⏰ Adding reminder: delay=%d sec, message=%s", delay, message.c_str());
-              
-              app.Schedule([&scheduler, id, delay, message]() {
-                  scheduler.addOnceAfterDelay(id, delay, message, true);
-              });
-              
-              cJSON* json = cJSON_CreateObject();
-              cJSON_AddBoolToObject(json, "success", true);
-              cJSON_AddNumberToObject(json, "schedule_id", id);
-              cJSON_AddNumberToObject(json, "delay_seconds", delay);
-              cJSON_AddStringToObject(json, "message", 
-                  ("Đã đặt lịch nhắc sau " + std::to_string(delay) + " giây: " + message).c_str());
-              
-              return json;
+            int delay = properties["seconds"].value<int>();
+            auto message = properties["message"].value<std::string>();
+
+            auto &app = Application::GetInstance();
+            auto &scheduler = RecurringSchedule::GetInstance();
+
+            // Generate unique ID based on timestamp
+            int id = (int)(esp_timer_get_time() / 1000);
+
+            ESP_LOGI(TAG, "⏰ Adding reminder: delay=%d sec, message=%s", delay,
+                     message.c_str());
+
+            app.Schedule([&scheduler, id, delay, message]() {
+              scheduler.addOnceAfterDelay(id, delay, message, true);
+            });
+
+            cJSON *json = cJSON_CreateObject();
+            cJSON_AddBoolToObject(json, "success", true);
+            cJSON_AddNumberToObject(json, "schedule_id", id);
+            cJSON_AddNumberToObject(json, "delay_seconds", delay);
+            cJSON_AddStringToObject(json, "message",
+                                    ("Đã đặt lịch nhắc sau " +
+                                     std::to_string(delay) +
+                                     " giây: " + message)
+                                        .c_str());
+
+            return json;
           });
-  
+
   AddTool("schedule.list_all",
           "📋 XEM TẤT CẢ LỊCH NHẮC đã đặt.\n"
           "Trả về JSON chứa thông tin tất cả lịch.",
-          PropertyList(),
-          [](const PropertyList &properties) -> ReturnValue {
-              auto &scheduler = RecurringSchedule::GetInstance();
-              ESP_LOGI(TAG, "📋 Listing all schedules");
-              return scheduler.getSchedulesJSON();
+          PropertyList(), [](const PropertyList &properties) -> ReturnValue {
+            auto &scheduler = RecurringSchedule::GetInstance();
+            ESP_LOGI(TAG, "📋 Listing all schedules");
+            return scheduler.getSchedulesJSON();
           });
-  
+
   AddTool("schedule.remove",
           "🗑️ XÓA LỊCH NHẮC theo ID.\n"
           "⚠️ LƯU Ý: Phải gọi 'schedule.list_all' trước để biết ID.\n"
           "Args:\n"
           "  `schedule_id`: ID của lịch cần xóa.",
-          PropertyList({
-              Property("schedule_id", kPropertyTypeInteger)
-          }),
+          PropertyList({Property("schedule_id", kPropertyTypeInteger)}),
           [](const PropertyList &properties) -> ReturnValue {
-              int id = properties["schedule_id"].value<int>();
-              auto &app = Application::GetInstance();
-              auto &scheduler = RecurringSchedule::GetInstance();
-              
-              ESP_LOGI(TAG, "🗑️ Removing schedule: id=%d", id);
-              
-              app.Schedule([&scheduler, id]() {
-                  scheduler.removeSchedule(id, true);
-              });
-              
-              return "{\"success\": true, \"message\": \"Đã xóa lịch nhắc ID " + std::to_string(id) + "\"}";
+            int id = properties["schedule_id"].value<int>();
+            auto &app = Application::GetInstance();
+            auto &scheduler = RecurringSchedule::GetInstance();
+
+            ESP_LOGI(TAG, "🗑️ Removing schedule: id=%d", id);
+
+            app.Schedule(
+                [&scheduler, id]() { scheduler.removeSchedule(id, true); });
+
+            return "{\"success\": true, \"message\": \"Đã xóa lịch nhắc ID " +
+                   std::to_string(id) + "\"}";
           });
 
+  AddTool("system.wifi_reset",
+          "Khởi động lại thiết bị và vào chế độ cấu hình WiFi để kết nối "
+          "mạng mới. "
+          "**CẢNH BÁO**: Hành động này sẽ ngắt kết nối hiện tại và yêu "
+          "cầu cấu hình lại WiFi. "
+          "Chỉ sử dụng khi cần thay đổi mạng WiFi hoặc khắc phục sự cố "
+          "kết nối. Cần xác nhận từ người dùng",
+          PropertyList(), [](const PropertyList &) -> ReturnValue {
+            auto &app = Application::GetInstance();
+            app.Schedule([]() {
+              ESP_LOGW(TAG, "User requested WiFi reset");
+              vTaskDelay(pdMS_TO_TICKS(1000));
 
-          AddTool("system.wifi_reset",
-                "Khởi động lại thiết bị và vào chế độ cấu hình WiFi để kết nối "
-                "mạng mới. "
-                "**CẢNH BÁO**: Hành động này sẽ ngắt kết nối hiện tại và yêu "
-                "cầu cấu hình lại WiFi. "
-                "Chỉ sử dụng khi cần thay đổi mạng WiFi hoặc khắc phục sự cố "
-                "kết nối. Cần xác nhận từ người dùng",
-                PropertyList(), [](const PropertyList &) -> ReturnValue {
-                  auto &app = Application::GetInstance();
-                  app.Schedule([]() {
-                    ESP_LOGW(TAG, "User requested WiFi reset");
-                    vTaskDelay(pdMS_TO_TICKS(1000));
-                    
-                    auto &board = Board::GetInstance();
-                    auto *wifi_board = dynamic_cast<WifiBoard*>(&board);
-                    if (wifi_board) {
-                      wifi_board->ResetWifiConfiguration();
-                    } else {
-                      ESP_LOGE(TAG, "Current board does not support WiFi reset");
-                    }
-                  });                  
-                  return true;
-                });
+              auto &board = Board::GetInstance();
+              auto *wifi_board = dynamic_cast<WifiBoard *>(&board);
+              if (wifi_board) {
+                wifi_board->ResetWifiConfiguration();
+              } else {
+                ESP_LOGE(TAG, "Current board does not support WiFi reset");
+              }
+            });
+            return true;
+          });
 
-    // Telegram functions
-    AddTool("msg.check",
-                "Kiểm tra và đọc tin nhắn mới từ Telegram bot. Trả về nội dung "
-                "JSON chứa các tin nhắn chưa đọc "
-                "bao gồm người gửi, thời gian, nội dung tin nhắn. Nếu có tin "
-                "nhắn mới sẽ đọc lần lượt từng tin. "
-                "Dùng để nhận thông báo, tin nhắn từ người thân hoặc hệ thống "
-                "giám sát từ xa",
-                PropertyList(), [](const PropertyList &) -> ReturnValue {
-                  auto &app = Application::GetInstance();
-                  return app.GetTelegramMsgBufferAsJson();
-                });
+  // Telegram functions
+  AddTool("msg.check",
+          "Kiểm tra và đọc tin nhắn mới từ Telegram bot. Trả về nội dung "
+          "JSON chứa các tin nhắn chưa đọc "
+          "bao gồm người gửi, thời gian, nội dung tin nhắn. Nếu có tin "
+          "nhắn mới sẽ đọc lần lượt từng tin. "
+          "Dùng để nhận thông báo, tin nhắn từ người thân hoặc hệ thống "
+          "giám sát từ xa",
+          PropertyList(), [](const PropertyList &) -> ReturnValue {
+            auto &app = Application::GetInstance();
+            return app.GetTelegramMsgBufferAsJson();
+          });
+  AddTool("sys heart rate",
+          "Đọc và trả về nhịp tim hiện tại từ cảm biến nhịp tim. trạng thái "
+          "kết nối của cảm biến",
+          PropertyList(), [](const PropertyList &) -> ReturnValue {
+            auto &app = Application::GetInstance();
+            return app.getHeartRate();
+          });
+
+  // ==================== SENSOR REPORTING TOOLS ====================
+  AddTool(
+      "sensor.start_reporting",
+      "📊 BẬT tự động báo cáo cảm biến định kỳ qua Telegram.\n"
+      "Cứ sau mỗi khoảng thời gian sẽ tự động gửi báo cáo bao gồm:\n"
+      "- ❤️ Nhịp tim và trạng thái BLE\n"
+      "- 💾 Tình trạng bộ nhớ hệ thống\n"
+      "- 📶 Trạng thái WiFi\n"
+      "- 🕐 Thời gian báo cáo\n"
+      "Args:\n"
+      "  `interval_seconds`: Thời gian giữa các lần báo cáo (giây, 10-3600)\n"
+      "**Lưu ý**: Thời gian tối thiểu là 10 giây.",
+      PropertyList({Property("interval_seconds", kPropertyTypeInteger, 60, 10,
+                             3600)}),
+      [](const PropertyList &properties) -> ReturnValue {
+        int interval = properties["interval_seconds"].value<int>();
+        auto &app = Application::GetInstance();
+
+        if (app.StartSensorReporting(interval)) {
+          cJSON *json = cJSON_CreateObject();
+          cJSON_AddBoolToObject(json, "success", true);
+          cJSON_AddStringToObject(
+              json, "message",
+              ("✅ Đã bật báo cáo cảm biến tự động mỗi " +
+               std::to_string(interval) + " giây")
+                  .c_str());
+          cJSON_AddNumberToObject(json, "interval_seconds", interval);
+          return json;
+        } else {
+          cJSON *json = cJSON_CreateObject();
+          cJSON_AddBoolToObject(json, "success", false);
+          cJSON_AddStringToObject(
+              json, "message",
+              "❌ Không thể bật báo cáo (có thể đang chạy rồi)");
+          return json;
+        }
+      });
+
+  AddTool(
+      "sensor.stop_reporting",
+      "🛑 TẮT báo cáo cảm biến định kỳ.\n"
+      "Dừng tất cả các báo cáo tự động đang chạy.",
+      PropertyList(), [](const PropertyList &) -> ReturnValue {
+        auto &app = Application::GetInstance();
+        app.StopSensorReporting();
+
+        cJSON *json = cJSON_CreateObject();
+        cJSON_AddBoolToObject(json, "success", true);
+        cJSON_AddStringToObject(json, "message",
+                                "✅ Đã tắt báo cáo cảm biến tự động");
+        return json;
+      });
+
+  AddTool(
+      "sensor.get_status",
+      "📋 KIỂM TRA trạng thái báo cáo cảm biến.\n"
+      "Trả về:\n"
+      "- enabled: Có đang bật không (true/false)\n"
+      "- interval_seconds: Thời gian giữa các lần báo cáo\n"
+      "- current_data: Dữ liệu cảm biến hiện tại",
+      PropertyList(), [](const PropertyList &) -> ReturnValue {
+        auto &app = Application::GetInstance();
+
+        cJSON *json = cJSON_CreateObject();
+        cJSON_AddBoolToObject(json, "enabled",
+                              app.IsSensorReportingEnabled());
+
+        if (app.IsSensorReportingEnabled()) {
+          cJSON_AddNumberToObject(json, "interval_seconds",
+                                  app.GetSensorReportInterval());
+          cJSON_AddStringToObject(json, "status", "🟢 Đang chạy");
+        } else {
+          cJSON_AddStringToObject(json, "status", "🔴 Đã tắt");
+        }
+
+        // Thêm dữ liệu cảm biến hiện tại
+        std::string hr_info = app.getHeartRate();
+        if (!hr_info.empty()) {
+          cJSON *current_data = cJSON_Parse(hr_info.c_str());
+          if (current_data) {
+            cJSON_AddItemToObject(json, "current_sensor_data", current_data);
+          }
+        }
+
+        return json;
+      });
 
   // Restore the original tools list to the end of the tools list
   tools_.insert(tools_.end(), original_tools.begin(), original_tools.end());

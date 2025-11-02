@@ -1,4 +1,5 @@
 #include "application.h"
+#include "I2CCommandBridge.h"
 #include "assets.h"
 #include "assets/lang_config.h"
 #include "audio_codec.h"
@@ -16,6 +17,7 @@
 #include <driver/gpio.h>
 #include <esp_log.h>
 #include <font_awesome.h>
+#include <wifi_station.h>
 
 #define TAG "Application"
 
@@ -556,18 +558,58 @@ void Application::Start() {
   // scheduler_->begin();
   scheduler_->setCallback([this](int id, const std::string &note) {
     ESP_LOGI(TAG, "⏰ Schedule reminder: %s", note.c_str());
-    
+
     // Thêm prefix để AI chỉ đọc lại, không trả lời thêm
     std::string tts_text = "Thông báo nhắc nhở: " + note;
-    
+
     auto &app = Application::GetInstance();
     app.SendTextCommandToServer(tts_text);
   });
 
+  // ==================== I2C COMMAND BRIDGE INITIALIZATION ====================
+  // Khởi tạo I2C Command Bridge để giao tiếp với Arduino actuator
+  // ESP_LOGI(TAG, "🔧 Initializing I2C Command Bridge...");
+  auto &i2c_bridge = I2CCommandBridge::GetInstance();
 
+  if (!i2c_bridge.Init()) {
+    ESP_LOGW(TAG, "⚠️  I2C Command Bridge init failed, continuing without "
+                  "actuator control");
+  } else {
+    ESP_LOGI(TAG, "✅ I2C Command Bridge initialized");
+
+    // Đăng ký callback để nhận status updates từ actuator
+    // Lambda không capture có thể convert thành function pointer
+    i2c_bridge.SetStatusCallback(
+        [](const ActuatorStatus &status, void *user_data) {
+          ESP_LOGI(TAG, "📊 Actuator Status Update:");
+          ESP_LOGI(TAG, "   Battery: %.1fV, BLE: %d, Heart Rate: %d",
+                   status.battery, status.ble_connected, status.heart_rate);
+          ESP_LOGI(TAG, "   Storage Slots: [%d, %d, %d, %d]",
+                   status.storage[0].is_open, status.storage[1].is_open,
+                   status.storage[2].is_open, status.storage[3].is_open);
+
+          // Lưu actuator status và heartrate info vào Application instance
+          if (user_data) {
+            auto *app = static_cast<Application *>(user_data);
+            app->last_actuator_status_ = status; // Lưu toàn bộ status
+            app->heartrate_info_ =
+                "{ \"ble_connected\": " + std::to_string(status.ble_connected) +
+                ", \"heart_rate\": " + std::to_string(status.heart_rate) + " }";
+          }
+        },
+        this); // Pass 'this' as user_data
+
+    // Bật polling để tự động nhận status mỗi 2 giây
+    if (i2c_bridge.StartStatusPolling(2000)) {
+      ESP_LOGI(TAG, "✅ I2C status polling started (interval: 2s)");
+    } else {
+      ESP_LOGW(TAG, "⚠️  Failed to start status polling");
+    }
+  }
 
   InitializeTelegramBot();
 }
+std::string Application::getHeartRate() { return heartrate_info_; }
 
 // Add a async task to MainLoop
 void Application::Schedule(std::function<void()> callback) {
@@ -985,6 +1027,7 @@ void Application::OnTelegramMessage(const TelegramMessage &message) {
   } else if (message.text == "/help") {
     std::string help_text = "🔧 Available commands:\n"
                             "/start - Start the bot\n"
+                            "/heartrate - get heartrate\n"
                             "/help - Show this help\n"
                             "/status - Get system status\n"
                             "/state - Get device state\n"
@@ -1000,6 +1043,9 @@ void Application::OnTelegramMessage(const TelegramMessage &message) {
     // status += "Free Heap: " + std::to_string(esp_get_free_heap_size() / 1024)
     // + " KB\n"; status += "Uptime: " + std::to_string(clock_ticks_ / 60) + "
     // minutes\n"; telegram_bot_->sendMessage(message.chat_id, status);
+  } else if (message.text == "/heartrate") {
+    telegram_bot_->sendMessage(message.chat_id,
+                               "📊 Heartrate Info: " + getHeartRate());
   } else if (message.text == "/state") {
     std::string state_msg =
         "🔄 Current device state: " + std::string(STATE_STRINGS[device_state_]);
@@ -1066,26 +1112,23 @@ void Application::SendTextCommandToServer(const std::string &text) {
   //   ESP_LOGI(TAG, "📤 Sending start listening before text command");
   //   protocol_->SendStartListening(kListeningModeAutoStop);
   //   // this->startListening();
-    
+
   //   // Đợi server chuẩn bị (200ms - đủ thời gian server xử lý start)
   //   vTaskDelay(pdMS_TO_TICKS(200));
-    
+
   //   // Bây giờ mới gửi text command (detect state)
   //   ESP_LOGI(TAG, "📤 Sending text command: %s", text.c_str());
   //   protocol_->SendTextCommand(text);
-
-
 
   //   // ✅ QUAN TRỌNG: Giữ ở state Listening để nhận TTS audio từ server
   //   // Server sẽ tự động gửi audio về và chuyển sang Speaking state
   //   // KHÔNG đóng channel ngay, đợi server xử lý xong
   //   // SetDeviceState(kDeviceStateListening);
-    
+
   //   ESP_LOGI(TAG, "⏳ Waiting for server TTS response...");
   // });
 
-
-   if (!protocol_) {
+  if (!protocol_) {
     ESP_LOGE(TAG, "Protocol not initialized");
     return;
   }
@@ -1104,11 +1147,121 @@ void Application::SendTextCommandToServer(const std::string &text) {
       }
     }
     SetDeviceState(kDeviceStateListening);
-    
 
     // Bây giờ session_id_ đã hợp lệ, gửi text command
     protocol_->SendTextCommand(text);
 
     // Chuyển sang trạng thái listening hoặc speaking tùy logic của bạn
   });
+}
+
+// ==================== SENSOR REPORTING TO TELEGRAM ====================
+
+static void SensorReportingTask(void *param) {
+  Application *app = static_cast<Application *>(param);
+  const char *TAG_SENSOR = "SensorReport";
+
+  ESP_LOGI(TAG_SENSOR, "📊 Sensor reporting task started (interval: %us)",
+           app->GetSensorReportInterval());
+
+  while (app->IsSensorReportingEnabled()) {
+    // Thu thập dữ liệu cảm biến
+    std::string report;
+    report.reserve(512); // Pre-allocate để giảm reallocation
+    report = "📊 **Báo cáo cảm biến**\n\n";
+
+    // Lấy actuator status qua getter
+    const ActuatorStatus& status = app->GetLastActuatorStatus();
+
+    // 1. Heart rate & BLE từ actuator
+    report += "❤️ **Nhịp tim**: ";
+    if (status.ble_connected) {
+      report += std::to_string(status.heart_rate) + " bpm\n";
+      report += "Trạng thái cảm biến: Đã kết nối\n";
+    } else {
+      report += "Không kết nối\n";
+      report += "Trạng thái cảm biến: Ngắt kết nối\n";
+    }
+
+    // 2. Battery
+    // report += "🔋 Pin: " + std::to_string(status.battery) + "V\n";
+
+    // 3. System info
+    report += "\n**Hệ thống**:\n";
+    report += "💾 Free Heap: " +
+              std::to_string(esp_get_free_heap_size() / 1024) + " KB\n";
+
+    // 4. Timestamp
+    time_t now;
+    time(&now);
+    char time_str[64];
+    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", localtime(&now));
+    report += "\n🕐 Thời gian: ";
+    report += time_str;
+
+    // Gửi report qua Telegram
+    ESP_LOGI(TAG_SENSOR, "📤 Sending sensor report...");
+    app->SendTelegramMessage(report);
+
+    // Đợi interval trước khi gửi lần tiếp theo
+    uint32_t interval_ms = app->GetSensorReportInterval() * 1000;
+    for (uint32_t i = 0; i < interval_ms / 1000; i++) {
+      if (!app->IsSensorReportingEnabled()) {
+        break; // Exit early if disabled
+      }
+      vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+  }
+
+  ESP_LOGI(TAG_SENSOR, "📊 Sensor reporting task stopped");
+  vTaskDelete(NULL);
+}
+
+bool Application::StartSensorReporting(uint32_t interval_seconds) {
+  if (sensor_report_enabled_) {
+    ESP_LOGW(TAG, "Sensor reporting already enabled");
+    return false;
+  }
+
+  if (interval_seconds < 10) {
+    ESP_LOGW(TAG, "Interval too short, minimum 10 seconds");
+    interval_seconds = 10;
+  }
+
+  sensor_report_interval_ms_ = interval_seconds * 1000;
+  sensor_report_enabled_ = true;
+
+  BaseType_t result = xTaskCreate(SensorReportingTask, "SensorReport",
+                                  8192, // Stack size (increased from 4096)
+                                  this, // Pass 'this' as parameter
+                                  3,    // Priority
+                                  &sensor_report_task_handle_);
+
+  if (result != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create sensor reporting task");
+    sensor_report_enabled_ = false;
+    return false;
+  }
+
+  ESP_LOGI(TAG, "✅ Sensor reporting started (interval: %us)",
+           interval_seconds);
+  return true;
+}
+
+void Application::StopSensorReporting() {
+  if (!sensor_report_enabled_) {
+    ESP_LOGW(TAG, "Sensor reporting not enabled");
+    return;
+  }
+
+  sensor_report_enabled_ = false;
+
+  // Wait for task to finish
+  if (sensor_report_task_handle_) {
+    vTaskDelay(pdMS_TO_TICKS(100)); // Give task time to exit
+    // Task will delete itself
+    sensor_report_task_handle_ = nullptr;
+  }
+
+  ESP_LOGI(TAG, "✅ Sensor reporting stopped");
 }

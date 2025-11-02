@@ -5,7 +5,19 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <ESP32Servo.h>
+#include <PS2X_lib.h> //for v1.6
 #include <Wire.h>
+
+#define PS2_DAT 23 // 14
+#define PS2_CMD 14 // 15
+#define PS2_SEL 13 // 16
+#define PS2_CLK 12 // 17
+
+#define pressures false
+// #define rumble      true
+#define rumble false
+
+PS2X ps2x; // create PS2 Controller Class
 
 // ==================== MACRO & JSON KEYS ====================
 #define STR_HELPER(x) #x
@@ -93,7 +105,7 @@ void bluetooth_init() {
 #define LED_STATUS 12
 
 // ==================== SERVO ANGLES ====================
-int servoOpenAngles[4]  = {90, 80, 90, 90};
+int servoOpenAngles[4] = {90, 80, 90, 90};
 int servoCloseAngles[4] = {150, 142, 150, 155};
 
 // ==================== GLOBAL STATE ====================
@@ -122,7 +134,7 @@ void setupMotors() {
   pinMode(MOTOR_EN, OUTPUT);
   disableMotors();
 
-  mFL.setPinsInverted(true);  // đảo chiều phù hợp chassis
+  mFL.setPinsInverted(true); // đảo chiều phù hợp chassis
   mBL.setPinsInverted(true);
 
   mFL.setMaxSpeed(MAX_SPEED);
@@ -137,7 +149,10 @@ void setupMotors() {
 }
 
 void stopVehicle() {
-  mFL.stop(); mFR.stop(); mBL.stop(); mBR.stop();
+  mFL.stop();
+  mFR.stop();
+  mBL.stop();
+  mBR.stop();
   disableMotors();
   isMoving = false;
   isDistanceMode = false;
@@ -155,37 +170,50 @@ void moveVehicleByTime(int dir, int speedPercent, int duration_ms) {
   enableMotors();
 
   switch (dir) {
-    case DIR_FORWARD:
-      mFL.setSpeed(speed);  mFR.setSpeed(speed);
-      mBL.setSpeed(speed);  mBR.setSpeed(speed);
-      break;
-    case DIR_BACKWARD:
-      mFL.setSpeed(-speed); mFR.setSpeed(-speed);
-      mBL.setSpeed(-speed); mBR.setSpeed(-speed);
-      break;
-    case DIR_LEFT:
-      mFL.setSpeed(-speed); mFR.setSpeed(speed);
-      mBL.setSpeed(speed);  mBR.setSpeed(-speed);
-      break;
-    case DIR_RIGHT:
-      mFL.setSpeed(speed);  mFR.setSpeed(-speed);
-      mBL.setSpeed(-speed); mBR.setSpeed(speed);
-      break;
-    case DIR_ROTATE_LEFT:
-      mFL.setSpeed(-speed); mFR.setSpeed(speed);
-      mBL.setSpeed(-speed); mBR.setSpeed(speed);
-      break;
-    case DIR_ROTATE_RIGHT:
-      mFL.setSpeed(speed);  mFR.setSpeed(-speed);
-      mBL.setSpeed(speed);  mBR.setSpeed(-speed);
-      break;
-    default:
-      Serial.println("⚠️ Invalid direction");
-      disableMotors();
-      return;
+  case DIR_FORWARD:
+    mFL.setSpeed(speed);
+    mFR.setSpeed(speed);
+    mBL.setSpeed(speed);
+    mBR.setSpeed(speed);
+    break;
+  case DIR_BACKWARD:
+    mFL.setSpeed(-speed);
+    mFR.setSpeed(-speed);
+    mBL.setSpeed(-speed);
+    mBR.setSpeed(-speed);
+    break;
+  case DIR_LEFT:
+    mFL.setSpeed(-speed);
+    mFR.setSpeed(speed);
+    mBL.setSpeed(speed);
+    mBR.setSpeed(-speed);
+    break;
+  case DIR_RIGHT:
+    mFL.setSpeed(speed);
+    mFR.setSpeed(-speed);
+    mBL.setSpeed(-speed);
+    mBR.setSpeed(speed);
+    break;
+  case DIR_ROTATE_LEFT:
+    mFL.setSpeed(-speed);
+    mFR.setSpeed(speed);
+    mBL.setSpeed(-speed);
+    mBR.setSpeed(speed);
+    break;
+  case DIR_ROTATE_RIGHT:
+    mFL.setSpeed(speed);
+    mFR.setSpeed(-speed);
+    mBL.setSpeed(speed);
+    mBR.setSpeed(-speed);
+    break;
+  default:
+    Serial.println("⚠️ Invalid direction");
+    disableMotors();
+    return;
   }
 
-  Serial.printf("🚗 Move dir=%d | speed=%.0f | time=%dms\n", dir, speed, duration_ms);
+  Serial.printf("🚗 Move dir=%d | speed=%.0f | time=%dms\n", dir, speed,
+                duration_ms);
   isMoving = true;
   isDistanceMode = false;
   moveStartTime = millis();
@@ -209,34 +237,46 @@ void moveVehicleByDistance(int dir, int speedPercent, int distance_mm) {
   mBR.setCurrentPosition(0);
 
   switch (dir) {
-    case DIR_FORWARD:
-      mFL.moveTo(steps);  mFR.moveTo(steps);
-      mBL.moveTo(steps);  mBR.moveTo(steps);
-      break;
-    case DIR_BACKWARD:
-      mFL.moveTo(-steps); mFR.moveTo(-steps);
-      mBL.moveTo(-steps); mBR.moveTo(-steps);
-      break;
-    case DIR_LEFT:
-      mFL.moveTo(-steps); mFR.moveTo(steps);
-      mBL.moveTo(steps);  mBR.moveTo(-steps);
-      break;
-    case DIR_RIGHT:
-      mFL.moveTo(steps);  mFR.moveTo(-steps);
-      mBL.moveTo(-steps); mBR.moveTo(steps);
-      break;
-    case DIR_ROTATE_LEFT:
-      mFL.moveTo(-steps); mFR.moveTo(steps);
-      mBL.moveTo(-steps); mBR.moveTo(steps);
-      break;
-    case DIR_ROTATE_RIGHT:
-      mFL.moveTo(steps);  mFR.moveTo(-steps);
-      mBL.moveTo(steps);  mBR.moveTo(-steps);
-      break;
-    default:
-      Serial.println("⚠️ Invalid direction for distance move");
-      disableMotors();
-      return;
+  case DIR_FORWARD:
+    mFL.moveTo(steps);
+    mFR.moveTo(steps);
+    mBL.moveTo(steps);
+    mBR.moveTo(steps);
+    break;
+  case DIR_BACKWARD:
+    mFL.moveTo(-steps);
+    mFR.moveTo(-steps);
+    mBL.moveTo(-steps);
+    mBR.moveTo(-steps);
+    break;
+  case DIR_LEFT:
+    mFL.moveTo(-steps);
+    mFR.moveTo(steps);
+    mBL.moveTo(steps);
+    mBR.moveTo(-steps);
+    break;
+  case DIR_RIGHT:
+    mFL.moveTo(steps);
+    mFR.moveTo(-steps);
+    mBL.moveTo(-steps);
+    mBR.moveTo(steps);
+    break;
+  case DIR_ROTATE_LEFT:
+    mFL.moveTo(-steps);
+    mFR.moveTo(steps);
+    mBL.moveTo(-steps);
+    mBR.moveTo(steps);
+    break;
+  case DIR_ROTATE_RIGHT:
+    mFL.moveTo(steps);
+    mFR.moveTo(-steps);
+    mBL.moveTo(steps);
+    mBR.moveTo(-steps);
+    break;
+  default:
+    Serial.println("⚠️ Invalid direction for distance move");
+    disableMotors();
+    return;
   }
 
   mFL.setMaxSpeed(speed);
@@ -249,14 +289,16 @@ void moveVehicleByDistance(int dir, int speedPercent, int distance_mm) {
   mBL.setAcceleration(speed * 2);
   mBR.setAcceleration(speed * 2);
 
-  Serial.printf("📏 Move dir=%d | dist=%dmm (%ld steps) | speed=%.1f\n", dir, distance_mm, steps, speed);
+  Serial.printf("📏 Move dir=%d | dist=%dmm (%ld steps) | speed=%.1f\n", dir,
+                distance_mm, steps, speed);
   isMoving = true;
   isDistanceMode = true;
 }
 
 // ==================== UPDATE MOTORS ====================
 void updateMotors() {
-  if (!isMoving) return;
+  if (!isMoving)
+    return;
 
   if (isDistanceMode) {
     bool flDone = (mFL.distanceToGo() == 0);
@@ -299,8 +341,10 @@ void setupServos() {
   Serial.println("🚪 All storage doors closed");
 }
 
-void moveServoSmooth(Servo &servo, int currentAngle, int targetAngle, int stepDelay = 10) {
-  if (currentAngle == targetAngle) return;
+void moveServoSmooth(Servo &servo, int currentAngle, int targetAngle,
+                     int stepDelay = 10) {
+  if (currentAngle == targetAngle)
+    return;
   int step = (targetAngle > currentAngle) ? 1 : -1;
   for (int angle = currentAngle; angle != targetAngle; angle += step) {
     servo.write(angle);
@@ -310,18 +354,22 @@ void moveServoSmooth(Servo &servo, int currentAngle, int targetAngle, int stepDe
 }
 
 void controlStorageDoor(int slot, int action) {
-  if (slot < 0 || slot > 3) return;
-  int currentAngle = storageStates[slot] ? servoOpenAngles[slot] : servoCloseAngles[slot];
-  int targetAngle  = (action == ACT_OPEN) ? servoOpenAngles[slot] : servoCloseAngles[slot];
+  if (slot < 0 || slot > 3)
+    return;
+  int currentAngle =
+      storageStates[slot] ? servoOpenAngles[slot] : servoCloseAngles[slot];
+  int targetAngle =
+      (action == ACT_OPEN) ? servoOpenAngles[slot] : servoCloseAngles[slot];
 
-  Serial.printf("🚪 Storage[%d] %s slowly %d°→%d°\n",
-                slot, (action == ACT_OPEN) ? "OPENING" : "CLOSING", currentAngle, targetAngle);
+  Serial.printf("🚪 Storage[%d] %s slowly %d°→%d°\n", slot,
+                (action == ACT_OPEN) ? "OPENING" : "CLOSING", currentAngle,
+                targetAngle);
 
   moveServoSmooth(servos[slot], currentAngle, targetAngle, 10);
   storageStates[slot] = (action == ACT_OPEN);
 
-  Serial.printf("✅ Storage[%d] %s (%d°)\n",
-                slot, (action == ACT_OPEN) ? "OPENED" : "CLOSED", targetAngle);
+  Serial.printf("✅ Storage[%d] %s (%d°)\n", slot,
+                (action == ACT_OPEN) ? "OPENED" : "CLOSED", targetAngle);
 }
 
 // ==================== JSON COMMAND ====================
@@ -340,9 +388,12 @@ void processCommand(String jsonStr) {
     int speed = doc[KEY_SPEED] | 50;
     int duration = doc[KEY_DURATION] | 0;
     int distance = doc[KEY_DISTANCE] | 0;
-    if (distance > 0) moveVehicleByDistance(dir, speed, distance);
-    else if (duration > 0) moveVehicleByTime(dir, speed, duration);
-    else stopVehicle();
+    if (distance > 0)
+      moveVehicleByDistance(dir, speed, distance);
+    else if (duration > 0)
+      moveVehicleByTime(dir, speed, duration);
+    else
+      stopVehicle();
     responseBuffer = "{\"" KEY_STATUS "\":" STR(STATUS_OK) "}";
   }
 
@@ -354,32 +405,33 @@ void processCommand(String jsonStr) {
   }
 
   else if (type == TYPE_STATUS) {
-    StaticJsonDocument<300> s;
-    s[KEY_STATUS] = STATUS_OK;
-    s[KEY_BATTERY] = 12.4;
+    StaticJsonDocument<32> s;
+    // Trạng thái chính
     s[KEY_CONN] = hrBle.isConnected() ? 1 : 0;
     s[KEY_HR] = hrBle.getHeartRate();
-    s[KEY_MOTOR_EN] = (digitalRead(MOTOR_EN) == LOW) ? 1 : 0;
-    s[KEY_MOVING] = isMoving ? 1 : 0;
 
-    JsonArray arr = s[KEY_STORAGE].to<JsonArray>();
+    // Thêm mảng trạng thái 4 ngăn: [0,0,1,1]
+    JsonArray arr = s.createNestedArray(KEY_STORAGE);
     for (int i = 0; i < 4; i++) {
-      JsonObject item = arr.add<JsonObject>();
-      item[KEY_ITEM_SLOT] = i;
-      item[KEY_ITEM_STATE] = storageStates[i] ? 1 : 0;
+      arr.add(storageStates[i] ? 1 : 0);
     }
+
+    // Xuất JSON ra buffer và serial
     responseBuffer = "";
     serializeJson(s, responseBuffer);
-  }
+    serializeJson(s, Serial);
+    Serial.println();
 
-  else responseBuffer = "{\"" KEY_STATUS "\":" STR(STATUS_UNKNOWN) "}";
+  } else
+    responseBuffer = "{\"" KEY_STATUS "\":" STR(STATUS_UNKNOWN) "}";
   responseReady = true;
 }
 
 // ==================== I2C HANDLERS ====================
 void onI2CReceive(int bytes) {
   rxBuffer = "";
-  while (Wire.available()) rxBuffer += (char)Wire.read();
+  while (Wire.available())
+    rxBuffer += (char)Wire.read();
   if (rxBuffer.startsWith("{") && rxBuffer.endsWith("}")) {
     responseReady = false;
     processCommand(rxBuffer);
@@ -389,28 +441,54 @@ void onI2CReceive(int bytes) {
   }
 }
 
+// void onI2CRequest() {
+//   if (!responseReady || responseBuffer.isEmpty())
+//     responseBuffer = "{\"" KEY_STATUS "\":0}";
+//   Wire.write(responseBuffer.c_str());
+//   responseReady = false;
+// }
+
 void onI2CRequest() {
+  // Nếu chưa có phản hồi thì gửi trạng thái mặc định
   if (!responseReady || responseBuffer.isEmpty())
     responseBuffer = "{\"" KEY_STATUS "\":0}";
-  Wire.write(responseBuffer.c_str());
+
+  const char *resp = responseBuffer.c_str();
+  int len = responseBuffer.length();
+
+  // Arduino core chỉ gửi tối đa 32 byte/lần → phải chia gói
+  int sent = 0;
+  while (sent < len) {
+    int chunk = min(32, len - sent);
+    Wire.write((const uint8_t *)(resp + sent), chunk);
+    sent += chunk;
+  }
+
   responseReady = false;
 }
 
 // ==================== TASKS ====================
 void TaskHeartRateBluetooth(void *parameter) {
   bluetooth_init();
-  for (;;) { hrBle.loop(); vTaskDelay(10 / portTICK_PERIOD_MS); }
+  for (;;) {
+    hrBle.loop();
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+  }
 }
 
 void TaskMotorUpdate(void *parameter) {
-  for (;;) { updateMotors(); vTaskDelay(1 / portTICK_PERIOD_MS); }
+  for (;;) {
+    updateMotors();
+    vTaskDelay(1 / portTICK_PERIOD_MS);
+  }
 }
 
 // ==================== MAIN ====================
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("\n🚗 Xiaozhi Actuator v4.4 | Distance & Servo Smooth Control");
+  Serial.println(
+      "\n🚗 Xiaozhi Actuator v4.4 | Distance & Servo Smooth Control");
 
   pinMode(LED_STATUS, OUTPUT);
   digitalWrite(LED_STATUS, LOW);
@@ -422,12 +500,74 @@ void setup() {
   Wire.onReceive(onI2CReceive);
   Wire.onRequest(onI2CRequest);
 
-  xTaskCreatePinnedToCore(TaskHeartRateBluetooth, "HeartRateBluetooth", 4096*5, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(TaskMotorUpdate, "MotorUpdate", 4096*5, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(TaskHeartRateBluetooth, "HeartRateBluetooth",
+                          4096 * 5, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(TaskMotorUpdate, "MotorUpdate", 4096 * 5, NULL, 1,
+                          NULL, 0);
 
   digitalWrite(LED_STATUS, HIGH);
   Serial.println("✅ System ready!");
   Serial.println("📍 I2C Address: 0x55");
+
+  ps2x.config_gamepad(PS2_CLK, PS2_CMD, PS2_SEL, PS2_DAT, pressures, rumble);
 }
 
-void loop() {}
+byte vibrate = 0;
+
+void loop() {
+     ps2x.read_gamepad(false, vibrate); //read controller and set large motor to spin at 'vibrate' speed
+    
+    if(ps2x.Button(PSB_START))         //will be TRUE as long as button is pressed
+      Serial.println("Start is being held");
+    if(ps2x.Button(PSB_SELECT))
+      Serial.println("Select is being held");      
+
+    if(ps2x.Button(PSB_PAD_UP)) {      //will be TRUE as long as button is pressed
+      Serial.print("Up held this hard: ");
+      Serial.println(ps2x.Analog(PSAB_PAD_UP), DEC);
+    }
+    if(ps2x.Button(PSB_PAD_RIGHT)){
+      Serial.print("Right held this hard: ");
+      Serial.println(ps2x.Analog(PSAB_PAD_RIGHT), DEC);
+    }
+    if(ps2x.Button(PSB_PAD_LEFT)){
+      Serial.print("LEFT held this hard: ");
+      Serial.println(ps2x.Analog(PSAB_PAD_LEFT), DEC);
+    }
+    if(ps2x.Button(PSB_PAD_DOWN)){
+      Serial.print("DOWN held this hard: ");
+      Serial.println(ps2x.Analog(PSAB_PAD_DOWN), DEC);
+    }   
+
+    vibrate = ps2x.Analog(PSAB_CROSS);  //this will set the large motor vibrate speed based on how hard you press the blue (X) button
+    if (ps2x.NewButtonState()) {        //will be TRUE if any button changes state (on to off, or off to on)
+      if(ps2x.Button(PSB_L3))
+        Serial.println("L3 pressed");
+      if(ps2x.Button(PSB_R3))
+        Serial.println("R3 pressed");
+      if(ps2x.Button(PSB_L2))
+        Serial.println("L2 pressed");
+      if(ps2x.Button(PSB_R2))
+        Serial.println("R2 pressed");
+      if(ps2x.Button(PSB_TRIANGLE))
+        Serial.println("Triangle pressed");        
+    }
+
+    if(ps2x.ButtonPressed(PSB_CIRCLE))               //will be TRUE if button was JUST pressed
+      Serial.println("Circle just pressed");
+    if(ps2x.NewButtonState(PSB_CROSS))               //will be TRUE if button was JUST pressed OR released
+      Serial.println("X just changed");
+    if(ps2x.ButtonReleased(PSB_SQUARE))              //will be TRUE if button was JUST released
+      Serial.println("Square just released");     
+
+    if(ps2x.Button(PSB_L1) || ps2x.Button(PSB_R1)) { //print stick values if either is TRUE
+      Serial.print("Stick Values:");
+      Serial.print(ps2x.Analog(PSS_LY), DEC); //Left stick, Y axis. Other options: LX, RY, RX  
+      Serial.print(",");
+      Serial.print(ps2x.Analog(PSS_LX), DEC); 
+      Serial.print(",");
+      Serial.print(ps2x.Analog(PSS_RY), DEC); 
+      Serial.print(",");
+      Serial.println(ps2x.Analog(PSS_RX), DEC); 
+    } 
+}

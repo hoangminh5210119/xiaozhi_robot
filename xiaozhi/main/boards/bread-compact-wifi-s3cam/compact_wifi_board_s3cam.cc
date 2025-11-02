@@ -1,3 +1,4 @@
+#include "RecurringSchedule.h"
 #include "application.h"
 #include "button.h"
 #include "codecs/no_audio_codec.h"
@@ -7,7 +8,6 @@
 #include "lamp_controller.h"
 #include "led/single_led.h"
 #include "mcp_server.h"
-#include "RecurringSchedule.h"
 #include "system_reset.h"
 #include "wifi_board.h"
 
@@ -78,14 +78,14 @@ private:
         .max_files = 5,
         .format_if_mount_failed = true,
     };
-    
+
     ESP_LOGI(TAG, "📂 Mounting storage partition...");
     esp_err_t ret = esp_vfs_spiffs_register(&storage_conf);
-    
+
     if (ret != ESP_OK) {
-      ESP_LOGE(TAG, "❌ Failed to mount storage partition: %s (0x%x)", 
+      ESP_LOGE(TAG, "❌ Failed to mount storage partition: %s (0x%x)",
                esp_err_to_name(ret), ret);
-      
+
       if (ret == ESP_ERR_NOT_FOUND) {
         ESP_LOGE(TAG, "   → Partition 'storage' not found in partition table!");
       } else if (ret == ESP_FAIL) {
@@ -95,13 +95,13 @@ private:
       }
     } else {
       ESP_LOGI(TAG, "✅ Storage partition mounted at /storage");
-      
+
       // Verify mount bằng cách check filesystem info
       size_t total = 0, used = 0;
       ret = esp_spiffs_info("storage", &total, &used);
       if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "   📊 SPIFFS: %d KB total, %d KB used, %d KB free", 
-                 total/1024, used/1024, (total-used)/1024);
+        ESP_LOGI(TAG, "   📊 SPIFFS: %d KB total, %d KB used, %d KB free",
+                 total / 1024, used / 1024, (total - used) / 1024);
       }
     }
   }
@@ -210,41 +210,41 @@ private:
       ESP_LOGD(TAG, "function_button_ button clicked");
       // Function button can be used for other purposes
 
-       auto &app = Application::GetInstance();
-    // auto &scheduler = RecurringSchedule::GetInstance();
-    
-    // ESP_LOGI(TAG, "📅 Initializing RecurringSchedule...");
-    // scheduler.begin("/storage/schedule.json");
-    // scheduler.setCallback([&app](int id, const std::string &note) {
-    //   ESP_LOGI(TAG, "⏰ Schedule triggered: id=%d, note=%s", id, note.c_str());
-    //   app.SendTextCommandToServer(note);
-    // });
-    // ESP_LOGI(TAG, "✅ RecurringSchedule initialized with %d schedules", 
-    //          scheduler.getCount());
+      auto &app = Application::GetInstance();
+      // auto &scheduler = RecurringSchedule::GetInstance();
 
-    app.SendTextCommandToServer("tới giờ uống thuốc rồi");
+      // ESP_LOGI(TAG, "📅 Initializing RecurringSchedule...");
+      // scheduler.begin("/storage/schedule.json");
+      // scheduler.setCallback([&app](int id, const std::string &note) {
+      //   ESP_LOGI(TAG, "⏰ Schedule triggered: id=%d, note=%s", id,
+      //   note.c_str()); app.SendTextCommandToServer(note);
+      // });
+      // ESP_LOGI(TAG, "✅ RecurringSchedule initialized with %d schedules",
+      //          scheduler.getCount());
+
+      app.SendTextCommandToServer("nhắc uống thuốc");
     });
   }
 
   void InitializeRecurringSchedule() {
     auto &app = Application::GetInstance();
     auto &scheduler = RecurringSchedule::GetInstance();
-    
+
     ESP_LOGI(TAG, "📅 Initializing RecurringSchedule...");
     scheduler.begin("/storage/schedule.json");
     scheduler.setCallback([&app](int id, const std::string &note) {
       ESP_LOGI(TAG, "⏰ Schedule triggered: id=%d, note=%s", id, note.c_str());
       app.SendTextCommandToServer(note);
     });
-    ESP_LOGI(TAG, "✅ RecurringSchedule initialized with %d schedules", 
+    ESP_LOGI(TAG, "✅ RecurringSchedule initialized with %d schedules",
              scheduler.getCount());
   }
 
 public:
   CompactWifiBoardS3Cam()
       : boot_button_(BOOT_BUTTON_GPIO), function_button_(FUNCTION_BUTTON_GPIO) {
-    MountStorage();  // Mount storage partition đầu tiên
-    InitializeRecurringSchedule();  // Initialize scheduler sau khi mount storage
+    MountStorage();                // Mount storage partition đầu tiên
+    InitializeRecurringSchedule(); // Initialize scheduler sau khi mount storage
     InitializeSpi();
     InitializeLcdDisplay();
     InitializeButtons();
@@ -253,7 +253,7 @@ public:
       GetBacklight()->RestoreBrightness();
     }
   }
-  
+
   virtual ~CompactWifiBoardS3Cam() {
     // Cleanup
   }

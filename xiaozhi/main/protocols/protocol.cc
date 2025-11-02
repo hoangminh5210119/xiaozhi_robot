@@ -96,7 +96,7 @@ void Protocol::SendTextCommand(const std::string &text) {
   // ESP_LOGI(TAG, "📤 SendTextCommand: %s", append_text.c_str());
   // SendText(message);
 
-  // std::string append_text = "đọc lên: \"" + text + "\"";
+  // const std::string append_text = "đọc lên: " + text + "";
   std::string message =
       "{\"session_id\":\"" + session_id_ +
       "\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"" +

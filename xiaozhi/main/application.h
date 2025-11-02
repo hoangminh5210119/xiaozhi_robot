@@ -77,6 +77,15 @@ public:
 
   void SendTextCommandToServer(const std::string &text);
 
+  std::string getHeartRate();
+  const ActuatorStatus& GetLastActuatorStatus() const { return last_actuator_status_; }
+  
+  // Sensor data reporting to Telegram
+  bool StartSensorReporting(uint32_t interval_seconds);
+  void StopSensorReporting();
+  bool IsSensorReportingEnabled() const { return sensor_report_enabled_; }
+  uint32_t GetSensorReportInterval() const { return sensor_report_interval_ms_ / 1000; }
+  
 
 //   std::string GetSchedulesAsJson();
 //   void add_once_schedule(int id, int64_t unixtime, const std::string &note);
@@ -150,6 +159,13 @@ private:
   std::string last_error_message_;
   AudioService audio_service_;
 
+  std::string heartrate_info_;
+  ActuatorStatus last_actuator_status_;
+
+  // Sensor data reporting task
+  bool sensor_report_enabled_ = false;
+  uint32_t sensor_report_interval_ms_ = 60000; // Default 60 seconds
+  TaskHandle_t sensor_report_task_handle_ = nullptr;
 
   // Thêm member cho RecurringSchedule và StorageManager
 //   RecurringSchedule scheduler;
