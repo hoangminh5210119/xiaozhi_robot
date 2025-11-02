@@ -555,8 +555,13 @@ void Application::Start() {
   auto scheduler_ = &RecurringSchedule::GetInstance();
   // scheduler_->begin();
   scheduler_->setCallback([this](int id, const std::string &note) {
+    ESP_LOGI(TAG, "⏰ Schedule reminder: %s", note.c_str());
+    
+    // Thêm prefix để AI chỉ đọc lại, không trả lời thêm
+    std::string tts_text = "Thông báo nhắc nhở: " + note;
+    
     auto &app = Application::GetInstance();
-    app.SendTextCommandToServer(note);
+    app.SendTextCommandToServer(tts_text);
   });
 
 
@@ -1035,7 +1040,52 @@ void Application::SendTelegramMessage(const std::string &message) {
 }
 
 void Application::SendTextCommandToServer(const std::string &text) {
-  if (!protocol_) {
+  // if (!protocol_) {
+  //   ESP_LOGE(TAG, "Protocol not initialized");
+  //   return;
+  // }
+
+  // Schedule([this, text]() {
+  //   // Kiểm tra xem audio channel có đang mở không
+  //   if (!protocol_->IsAudioChannelOpened()) {
+  //     ESP_LOGI(TAG,
+  //              "Audio channel closed, opening before sending text command");
+  //     SetDeviceState(kDeviceStateConnecting);
+
+  //     // Mở audio channel để lấy session_id mới
+  //     if (!protocol_->OpenAudioChannel()) {
+  //       ESP_LOGE(TAG, "Failed to open audio channel");
+  //       return;
+  //     }
+  //   }
+
+  //   // protocol_->SendStartListening(kListeningModeRealtime);
+
+  //   // ✅ QUAN TRỌNG: Gửi start listening mode TRƯỚC khi gửi text
+  //   // Theo protocol WebSocket: start → detect (cho text dài)
+  //   ESP_LOGI(TAG, "📤 Sending start listening before text command");
+  //   protocol_->SendStartListening(kListeningModeAutoStop);
+  //   // this->startListening();
+    
+  //   // Đợi server chuẩn bị (200ms - đủ thời gian server xử lý start)
+  //   vTaskDelay(pdMS_TO_TICKS(200));
+    
+  //   // Bây giờ mới gửi text command (detect state)
+  //   ESP_LOGI(TAG, "📤 Sending text command: %s", text.c_str());
+  //   protocol_->SendTextCommand(text);
+
+
+
+  //   // ✅ QUAN TRỌNG: Giữ ở state Listening để nhận TTS audio từ server
+  //   // Server sẽ tự động gửi audio về và chuyển sang Speaking state
+  //   // KHÔNG đóng channel ngay, đợi server xử lý xong
+  //   // SetDeviceState(kDeviceStateListening);
+    
+  //   ESP_LOGI(TAG, "⏳ Waiting for server TTS response...");
+  // });
+
+
+   if (!protocol_) {
     ESP_LOGE(TAG, "Protocol not initialized");
     return;
   }
@@ -1054,6 +1104,7 @@ void Application::SendTextCommandToServer(const std::string &text) {
       }
     }
     SetDeviceState(kDeviceStateListening);
+    
 
     // Bây giờ session_id_ đã hợp lệ, gửi text command
     protocol_->SendTextCommand(text);

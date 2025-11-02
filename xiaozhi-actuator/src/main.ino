@@ -1,4 +1,5 @@
 
+
 #include "HeartRateBLE.h"
 #include <AccelStepper.h>
 #include <Arduino.h>
@@ -71,7 +72,6 @@ void bluetooth_init() {
 #define SCL_PIN 22
 
 #define MOTOR_EN 19
-
 #define MOTOR_FL_STEP 0
 #define MOTOR_FL_DIR 4
 #define MOTOR_FR_STEP 16
@@ -92,7 +92,7 @@ void bluetooth_init() {
 #define SERVO_3 26
 #define LED_STATUS 12
 
-// ==================== SERVO ANGLES (INDIVIDUAL) ====================
+// ==================== SERVO ANGLES ====================
 int servoOpenAngles[4]  = {90, 80, 90, 90};
 int servoCloseAngles[4] = {150, 142, 150, 155};
 
@@ -121,33 +121,30 @@ void disableMotors() { digitalWrite(MOTOR_EN, HIGH); }
 void setupMotors() {
   pinMode(MOTOR_EN, OUTPUT);
   disableMotors();
+
+  mFL.setPinsInverted(true);  // đảo chiều phù hợp chassis
+  mBL.setPinsInverted(true);
+
   mFL.setMaxSpeed(MAX_SPEED);
   mFR.setMaxSpeed(MAX_SPEED);
   mBL.setMaxSpeed(MAX_SPEED);
   mBR.setMaxSpeed(MAX_SPEED);
-  mFL.setPinsInverted(true);
-  mBL.setPinsInverted(true);
-}
 
-void setMotorSpeeds(float fl, float fr, float bl, float br) {
-  mFL.setSpeed(fl);
-  mFR.setSpeed(fr);
-  mBL.setSpeed(bl);
-  mBR.setSpeed(br);
+  mFL.setAcceleration(MAX_SPEED * 2);
+  mFR.setAcceleration(MAX_SPEED * 2);
+  mBL.setAcceleration(MAX_SPEED * 2);
+  mBR.setAcceleration(MAX_SPEED * 2);
 }
 
 void stopVehicle() {
-  setMotorSpeeds(0, 0, 0, 0);
-  mFL.setCurrentPosition(0);
-  mFR.setCurrentPosition(0);
-  mBL.setCurrentPosition(0);
-  mBR.setCurrentPosition(0);
+  mFL.stop(); mFR.stop(); mBL.stop(); mBR.stop();
   disableMotors();
   isMoving = false;
   isDistanceMode = false;
   Serial.println("🛑 Vehicle stopped");
 }
 
+// ==================== MOVE BY TIME ====================
 void moveVehicleByTime(int dir, int speedPercent, int duration_ms) {
   if (speedPercent <= 0 || duration_ms <= 0) {
     Serial.println("⚠️ Invalid time parameters");
@@ -158,16 +155,34 @@ void moveVehicleByTime(int dir, int speedPercent, int duration_ms) {
   enableMotors();
 
   switch (dir) {
-  case DIR_FORWARD:      setMotorSpeeds(speed,  speed,  speed,  speed);  break;
-  case DIR_BACKWARD:     setMotorSpeeds(-speed, -speed, -speed, -speed); break;
-  case DIR_LEFT:         setMotorSpeeds(-speed, speed,  speed, -speed);  break;
-  case DIR_RIGHT:        setMotorSpeeds(speed, -speed, -speed, speed);   break;
-  case DIR_ROTATE_LEFT:  setMotorSpeeds(-speed, speed, -speed, speed);   break;
-  case DIR_ROTATE_RIGHT: setMotorSpeeds(speed, -speed, speed, -speed);   break;
-  default:
-    Serial.println("⚠️ Invalid direction");
-    disableMotors();
-    return;
+    case DIR_FORWARD:
+      mFL.setSpeed(speed);  mFR.setSpeed(speed);
+      mBL.setSpeed(speed);  mBR.setSpeed(speed);
+      break;
+    case DIR_BACKWARD:
+      mFL.setSpeed(-speed); mFR.setSpeed(-speed);
+      mBL.setSpeed(-speed); mBR.setSpeed(-speed);
+      break;
+    case DIR_LEFT:
+      mFL.setSpeed(-speed); mFR.setSpeed(speed);
+      mBL.setSpeed(speed);  mBR.setSpeed(-speed);
+      break;
+    case DIR_RIGHT:
+      mFL.setSpeed(speed);  mFR.setSpeed(-speed);
+      mBL.setSpeed(-speed); mBR.setSpeed(speed);
+      break;
+    case DIR_ROTATE_LEFT:
+      mFL.setSpeed(-speed); mFR.setSpeed(speed);
+      mBL.setSpeed(-speed); mBR.setSpeed(speed);
+      break;
+    case DIR_ROTATE_RIGHT:
+      mFL.setSpeed(speed);  mFR.setSpeed(-speed);
+      mBL.setSpeed(speed);  mBR.setSpeed(-speed);
+      break;
+    default:
+      Serial.println("⚠️ Invalid direction");
+      disableMotors();
+      return;
   }
 
   Serial.printf("🚗 Move dir=%d | speed=%.0f | time=%dms\n", dir, speed, duration_ms);
@@ -177,7 +192,7 @@ void moveVehicleByTime(int dir, int speedPercent, int duration_ms) {
   moveDuration = duration_ms;
 }
 
-// ==================== MOVE BY DISTANCE (FULL DIRECTIONS) ====================
+// ==================== MOVE BY DISTANCE ====================
 void moveVehicleByDistance(int dir, int speedPercent, int distance_mm) {
   if (speedPercent <= 0 || distance_mm <= 0) {
     Serial.println("⚠️ Invalid distance parameters");
@@ -185,58 +200,56 @@ void moveVehicleByDistance(int dir, int speedPercent, int distance_mm) {
   }
 
   float speed = map(speedPercent, 0, 100, 0, MAX_SPEED);
-  long steps = distance_mm * STEPS_PER_MM;
+  long steps = (long)(distance_mm * STEPS_PER_MM);
   enableMotors();
 
-  // reset positions
   mFL.setCurrentPosition(0);
   mFR.setCurrentPosition(0);
   mBL.setCurrentPosition(0);
   mBR.setCurrentPosition(0);
 
   switch (dir) {
-  case DIR_FORWARD:
-    mFL.move(steps);  mFR.move(steps);  mBL.move(steps);  mBR.move(steps);
-    setMotorSpeeds(speed, speed, speed, speed);
-    Serial.printf("⬆️ Forward %dmm (%ld steps)\n", distance_mm, steps);
-    break;
-
-  case DIR_BACKWARD:
-    mFL.move(-steps); mFR.move(-steps); mBL.move(-steps); mBR.move(-steps);
-    setMotorSpeeds(-speed, -speed, -speed, -speed);
-    Serial.printf("⬇️ Backward %dmm (%ld steps)\n", distance_mm, steps);
-    break;
-
-  case DIR_LEFT:
-    mFL.move(-steps); mFR.move(steps);  mBL.move(steps);  mBR.move(-steps);
-    setMotorSpeeds(-speed, speed, speed, -speed);
-    Serial.printf("⬅️ Left strafe %dmm (%ld steps)\n", distance_mm, steps);
-    break;
-
-  case DIR_RIGHT:
-    mFL.move(steps);  mFR.move(-steps); mBL.move(-steps); mBR.move(steps);
-    setMotorSpeeds(speed, -speed, -speed, speed);
-    Serial.printf("➡️ Right strafe %dmm (%ld steps)\n", distance_mm, steps);
-    break;
-
-  case DIR_ROTATE_LEFT:
-    mFL.move(-steps); mFR.move(steps);  mBL.move(-steps); mBR.move(steps);
-    setMotorSpeeds(-speed, speed, -speed, speed);
-    Serial.printf("↶ Rotate left %dmm (%ld steps)\n", distance_mm, steps);
-    break;
-
-  case DIR_ROTATE_RIGHT:
-    mFL.move(steps);  mFR.move(-steps); mBL.move(steps);  mBR.move(-steps);
-    setMotorSpeeds(speed, -speed, speed, -speed);
-    Serial.printf("↷ Rotate right %dmm (%ld steps)\n", distance_mm, steps);
-    break;
-
-  default:
-    Serial.println("⚠️ Invalid direction for distance move");
-    disableMotors();
-    return;
+    case DIR_FORWARD:
+      mFL.moveTo(steps);  mFR.moveTo(steps);
+      mBL.moveTo(steps);  mBR.moveTo(steps);
+      break;
+    case DIR_BACKWARD:
+      mFL.moveTo(-steps); mFR.moveTo(-steps);
+      mBL.moveTo(-steps); mBR.moveTo(-steps);
+      break;
+    case DIR_LEFT:
+      mFL.moveTo(-steps); mFR.moveTo(steps);
+      mBL.moveTo(steps);  mBR.moveTo(-steps);
+      break;
+    case DIR_RIGHT:
+      mFL.moveTo(steps);  mFR.moveTo(-steps);
+      mBL.moveTo(-steps); mBR.moveTo(steps);
+      break;
+    case DIR_ROTATE_LEFT:
+      mFL.moveTo(-steps); mFR.moveTo(steps);
+      mBL.moveTo(-steps); mBR.moveTo(steps);
+      break;
+    case DIR_ROTATE_RIGHT:
+      mFL.moveTo(steps);  mFR.moveTo(-steps);
+      mBL.moveTo(steps);  mBR.moveTo(-steps);
+      break;
+    default:
+      Serial.println("⚠️ Invalid direction for distance move");
+      disableMotors();
+      return;
   }
 
+  mFL.setMaxSpeed(speed);
+  mFR.setMaxSpeed(speed);
+  mBL.setMaxSpeed(speed);
+  mBR.setMaxSpeed(speed);
+
+  mFL.setAcceleration(speed * 2);
+  mFR.setAcceleration(speed * 2);
+  mBL.setAcceleration(speed * 2);
+  mBR.setAcceleration(speed * 2);
+
+  Serial.printf("📏 Move dir=%d | dist=%dmm (%ld steps) | speed=%.1f\n", dir, distance_mm, steps, speed);
   isMoving = true;
   isDistanceMode = true;
 }
@@ -245,20 +258,35 @@ void moveVehicleByDistance(int dir, int speedPercent, int distance_mm) {
 void updateMotors() {
   if (!isMoving) return;
 
-  mFL.runSpeed();
-  mFR.runSpeed();
-  mBL.runSpeed();
-  mBR.runSpeed();
-
   if (isDistanceMode) {
-    if (mFL.distanceToGo() == 0 && mFR.distanceToGo() == 0 &&
-        mBL.distanceToGo() == 0 && mBR.distanceToGo() == 0)
+    bool flDone = (mFL.distanceToGo() == 0);
+    bool frDone = (mFR.distanceToGo() == 0);
+    bool blDone = (mBL.distanceToGo() == 0);
+    bool brDone = (mBR.distanceToGo() == 0);
+
+    mFL.run();
+    mFR.run();
+    mBL.run();
+    mBR.run();
+
+    if (flDone && frDone && blDone && brDone) {
       stopVehicle();
-  } else if (millis() - moveStartTime >= moveDuration)
-    stopVehicle();
+      Serial.println("✅ Distance move complete");
+    }
+  } else {
+    mFL.runSpeed();
+    mFR.runSpeed();
+    mBL.runSpeed();
+    mBR.runSpeed();
+
+    if (millis() - moveStartTime >= moveDuration) {
+      stopVehicle();
+      Serial.println("✅ Timed move complete");
+    }
+  }
 }
 
-// ==================== SERVO CONTROL ====================
+// ==================== SERVO CONTROL (SMOOTH) ====================
 void setupServos() {
   servos[0].attach(SERVO_0, SERVO_MIN_US, SERVO_MAX_US);
   servos[1].attach(SERVO_1, SERVO_MIN_US, SERVO_MAX_US);
@@ -268,23 +296,35 @@ void setupServos() {
     servos[i].write(servoCloseAngles[i]);
     storageStates[i] = false;
   }
-  Serial.println("🚪 All storage doors closed (individual angles)");
+  Serial.println("🚪 All storage doors closed");
+}
+
+void moveServoSmooth(Servo &servo, int currentAngle, int targetAngle, int stepDelay = 10) {
+  if (currentAngle == targetAngle) return;
+  int step = (targetAngle > currentAngle) ? 1 : -1;
+  for (int angle = currentAngle; angle != targetAngle; angle += step) {
+    servo.write(angle);
+    delay(stepDelay);
+  }
+  servo.write(targetAngle);
 }
 
 void controlStorageDoor(int slot, int action) {
   if (slot < 0 || slot > 3) return;
-  if (action == ACT_OPEN) {
-    servos[slot].write(servoOpenAngles[slot]);
-    storageStates[slot] = true;
-    Serial.printf("🚪 Storage[%d] OPENED (%d°)\n", slot, servoOpenAngles[slot]);
-  } else {
-    servos[slot].write(servoCloseAngles[slot]);
-    storageStates[slot] = false;
-    Serial.printf("🚪 Storage[%d] CLOSED (%d°)\n", slot, servoCloseAngles[slot]);
-  }
+  int currentAngle = storageStates[slot] ? servoOpenAngles[slot] : servoCloseAngles[slot];
+  int targetAngle  = (action == ACT_OPEN) ? servoOpenAngles[slot] : servoCloseAngles[slot];
+
+  Serial.printf("🚪 Storage[%d] %s slowly %d°→%d°\n",
+                slot, (action == ACT_OPEN) ? "OPENING" : "CLOSING", currentAngle, targetAngle);
+
+  moveServoSmooth(servos[slot], currentAngle, targetAngle, 10);
+  storageStates[slot] = (action == ACT_OPEN);
+
+  Serial.printf("✅ Storage[%d] %s (%d°)\n",
+                slot, (action == ACT_OPEN) ? "OPENED" : "CLOSED", targetAngle);
 }
 
-// ==================== JSON COMMAND PROCESSING ====================
+// ==================== JSON COMMAND ====================
 void processCommand(String jsonStr) {
   StaticJsonDocument<256> doc;
   if (deserializeJson(doc, jsonStr)) {
@@ -336,7 +376,7 @@ void processCommand(String jsonStr) {
   responseReady = true;
 }
 
-// ==================== I2C COMMUNICATION ====================
+// ==================== I2C HANDLERS ====================
 void onI2CReceive(int bytes) {
   rxBuffer = "";
   while (Wire.available()) rxBuffer += (char)Wire.read();
@@ -356,7 +396,7 @@ void onI2CRequest() {
   responseReady = false;
 }
 
-// ==================== FREERTOS TASKS ====================
+// ==================== TASKS ====================
 void TaskHeartRateBluetooth(void *parameter) {
   bluetooth_init();
   for (;;) { hrBle.loop(); vTaskDelay(10 / portTICK_PERIOD_MS); }
@@ -370,7 +410,7 @@ void TaskMotorUpdate(void *parameter) {
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("\n🚗 Xiaozhi Actuator - v4.3 FULL DISTANCE CONTROL");
+  Serial.println("\n🚗 Xiaozhi Actuator v4.4 | Distance & Servo Smooth Control");
 
   pinMode(LED_STATUS, OUTPUT);
   digitalWrite(LED_STATUS, LOW);

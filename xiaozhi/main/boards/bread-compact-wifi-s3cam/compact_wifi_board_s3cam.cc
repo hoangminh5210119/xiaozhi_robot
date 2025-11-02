@@ -7,6 +7,7 @@
 #include "lamp_controller.h"
 #include "led/single_led.h"
 #include "mcp_server.h"
+#include "RecurringSchedule.h"
 #include "system_reset.h"
 #include "wifi_board.h"
 
@@ -192,6 +193,7 @@ private:
     config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
     camera_ = new Esp32Camera(config);
     camera_->SetHMirror(false);
+    camera_->SetVFlip(true);
   }
 
   void InitializeButtons() {
@@ -207,13 +209,42 @@ private:
     function_button_.OnClick([this]() {
       ESP_LOGD(TAG, "function_button_ button clicked");
       // Function button can be used for other purposes
+
+       auto &app = Application::GetInstance();
+    // auto &scheduler = RecurringSchedule::GetInstance();
+    
+    // ESP_LOGI(TAG, "📅 Initializing RecurringSchedule...");
+    // scheduler.begin("/storage/schedule.json");
+    // scheduler.setCallback([&app](int id, const std::string &note) {
+    //   ESP_LOGI(TAG, "⏰ Schedule triggered: id=%d, note=%s", id, note.c_str());
+    //   app.SendTextCommandToServer(note);
+    // });
+    // ESP_LOGI(TAG, "✅ RecurringSchedule initialized with %d schedules", 
+    //          scheduler.getCount());
+
+    app.SendTextCommandToServer("tới giờ uống thuốc rồi");
     });
+  }
+
+  void InitializeRecurringSchedule() {
+    auto &app = Application::GetInstance();
+    auto &scheduler = RecurringSchedule::GetInstance();
+    
+    ESP_LOGI(TAG, "📅 Initializing RecurringSchedule...");
+    scheduler.begin("/storage/schedule.json");
+    scheduler.setCallback([&app](int id, const std::string &note) {
+      ESP_LOGI(TAG, "⏰ Schedule triggered: id=%d, note=%s", id, note.c_str());
+      app.SendTextCommandToServer(note);
+    });
+    ESP_LOGI(TAG, "✅ RecurringSchedule initialized with %d schedules", 
+             scheduler.getCount());
   }
 
 public:
   CompactWifiBoardS3Cam()
       : boot_button_(BOOT_BUTTON_GPIO), function_button_(FUNCTION_BUTTON_GPIO) {
     MountStorage();  // Mount storage partition đầu tiên
+    InitializeRecurringSchedule();  // Initialize scheduler sau khi mount storage
     InitializeSpi();
     InitializeLcdDisplay();
     InitializeButtons();

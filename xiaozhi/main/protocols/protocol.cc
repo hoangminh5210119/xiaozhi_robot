@@ -85,18 +85,24 @@ void Protocol::SendMcpMessage(const std::string &payload) {
 }
 
 void Protocol::SendTextCommand(const std::string &text) {
-  // Append thêm vào text trước khi gửi, ví dụ thêm tiền tố "[APPEND]"
-  std::string appended_text =
-      "bạn chỉ cần nói đoạn văn bản được đưa vào trong dấu ngoặc, không nói "
-      "thêm gì khác, vì đây là phần tts chứ không phải là câu hỏi. nội dung "
-      "cần chuyển tts [ " +
-      text + " ]";
+  // Gửi text trực tiếp để server xử lý như một câu lệnh voice bình thường
+  // Server sẽ tự động tạo TTS response
+  // std::string append_text = "đọc lại đoạn sau: [" + text + "]";
+  // std::string message =
+  //     "{\"session_id\":\"" + session_id_ +
+  //     "\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"" +
+  //     append_text + "\"}";
 
+  // ESP_LOGI(TAG, "📤 SendTextCommand: %s", append_text.c_str());
+  // SendText(message);
+
+  // std::string append_text = "đọc lên: \"" + text + "\"";
   std::string message =
       "{\"session_id\":\"" + session_id_ +
       "\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"" +
-      appended_text + "\"}";
+      text + "\"}";
 
+  ESP_LOGI(TAG, "📤 SendTextCommand: %s", text.c_str());
   SendText(message);
 }
 

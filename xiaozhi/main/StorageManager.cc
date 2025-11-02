@@ -739,3 +739,46 @@ void StorageManager::NotifyStatus(const std::string& message) {
         status_callback_(message);
     }
 }
+
+// ==================== SMART STORAGE (PENDING STATE) ====================
+
+void StorageManager::SetPendingItem(int slot_id, const std::string& item_name) {
+    if (slot_id < 0 || slot_id > 3) {
+        ESP_LOGE(TAG, "Invalid slot_id: %d", slot_id);
+        return;
+    }
+    
+    pending_items_[slot_id] = item_name;
+    ESP_LOGI(TAG, "⏳ Pending: '%s' will be stored in slot %d", item_name.c_str(), slot_id);
+}
+
+std::string StorageManager::GetPendingItem(int slot_id) const {
+    if (slot_id < 0 || slot_id > 3) {
+        return "";
+    }
+    
+    auto it = pending_items_.find(slot_id);
+    if (it != pending_items_.end()) {
+        return it->second;
+    }
+    return "";
+}
+
+void StorageManager::ClearPendingItem(int slot_id) {
+    if (slot_id < 0 || slot_id > 3) {
+        return;
+    }
+    
+    auto it = pending_items_.find(slot_id);
+    if (it != pending_items_.end()) {
+        ESP_LOGI(TAG, "✅ Cleared pending state for slot %d", slot_id);
+        pending_items_.erase(it);
+    }
+}
+
+const StorageManager::HardwareSlot* StorageManager::GetHardwareSlot(int slot_id) const {
+    if (slot_id < 0 || slot_id > 3) {
+        return nullptr;
+    }
+    return &hardware_slots_[slot_id];
+}

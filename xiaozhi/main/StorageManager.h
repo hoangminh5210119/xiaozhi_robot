@@ -189,6 +189,35 @@ public:
      * @brief Lấy số items ở virtual locations
      */
     int GetVirtualItemCount();
+    
+    // ==================== SMART STORAGE (PENDING STATE) ====================
+    
+    /**
+     * @brief Đặt item đang chờ được bỏ vào ô
+     * @param slot_id ID của ô (0-3)
+     * @param item_name Tên item sẽ được bỏ vào
+     */
+    void SetPendingItem(int slot_id, const std::string& item_name);
+    
+    /**
+     * @brief Lấy tên item đang chờ ở ô
+     * @param slot_id ID của ô (0-3)
+     * @return Tên item hoặc chuỗi rỗng nếu không có
+     */
+    std::string GetPendingItem(int slot_id) const;
+    
+    /**
+     * @brief Xóa pending state của ô
+     * @param slot_id ID của ô (0-3)
+     */
+    void ClearPendingItem(int slot_id);
+    
+    /**
+     * @brief Lấy pointer tới hardware slot (for direct access)
+     * @param slot_id ID của ô (0-3)
+     * @return Pointer to HardwareSlot hoặc nullptr nếu invalid
+     */
+    const HardwareSlot* GetHardwareSlot(int slot_id) const;
 
 private:
     StorageManager();
@@ -200,6 +229,9 @@ private:
     // Storage data
     std::map<std::string, StorageItem> items_;  // Key: item name (lowercase)
     HardwareSlot hardware_slots_[4];
+    
+    // Pending state: item đang chờ được bỏ vào ô
+    std::map<int, std::string> pending_items_;  // Key: slot_id, Value: item_name
     
     StatusCallback status_callback_;
     

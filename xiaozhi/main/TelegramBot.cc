@@ -479,130 +479,87 @@ esp_err_t TelegramBot::httpEventHandlerSms(esp_http_client_event_t *evt) {
   return ESP_OK;
 }
 
-// // Make HTTP request - Modified to check configuration
-// esp_err_t TelegramBot::makeHttpRequest(const std::string &endpoint,
-//                                        const std::string &method,
-//                                        const std::string &post_data,
-//                                        std::string *response) {
-//   if (!isConfigured()) {
-//     ESP_LOGE(TAG, "Bot is not configured, cannot make HTTP request");
-//     return ESP_ERR_INVALID_STATE;
-//   }
-
-//   char buffer[MAX_HTTP_OUTPUT_BUFFER];
-//   memset(buffer, 0, sizeof(buffer));
-//   std::string url = api_url_ + endpoint;
-
-//   // Initialize config structure properly
-//   esp_http_client_config_t config;
-//   memset(&config, 0, sizeof(config));
-
-//   config.url = url.c_str();
-//   config.transport_type = HTTP_TRANSPORT_OVER_SSL;
-//   config.event_handler = httpEventHandler;
-//   config.user_data = buffer;
-//   config.cert_pem = telegram_certificate_pem_start;
-//   config.timeout_ms = 30000; // 30 second timeout
-
-//   esp_http_client_handle_t client = esp_http_client_init(&config);
-//   if (!client) {
-//     ESP_LOGE(TAG, "Failed to initialize HTTP client");
-//     return ESP_FAIL;
-//   }
-
-//   esp_err_t err;
-
-//   if (method == "POST") {
-//     err = esp_http_client_set_method(client, HTTP_METHOD_POST);
-//     if (err == ESP_OK) {
-//       err = esp_http_client_set_header(client, "Content-Type",
-//                                        "application/json");
-//     }
-//     if (err == ESP_OK) {
-//       err = esp_http_client_set_post_field(client, post_data.c_str(),
-//                                            post_data.length());
-//     }
-//   } else {
-//     err = esp_http_client_set_method(client, HTTP_METHOD_GET);
-//   }
-
-//   if (err != ESP_OK) {
-//     ESP_LOGE(TAG, "Failed to configure HTTP client: %s", esp_err_to_name(err));
-//     esp_http_client_cleanup(client);
-//     return err;
-//   }
-
-//   err = esp_http_client_perform(client);
-
-//   if (err == ESP_OK) {
-//     int status_code = esp_http_client_get_status_code(client);
-//     int64_t content_length = esp_http_client_get_content_length(client);
-
-//     ESP_LOGD(TAG, "HTTP %s Status = %d, content_length = %lld", method.c_str(),
-//              status_code, content_length);
-
-//     if (response) {
-//       *response = std::string(buffer);
-//     }
-
-//     if (status_code != 200) {
-//       ESP_LOGW(TAG, "HTTP request failed with status %d, response: %s",
-//                status_code, buffer);
-//       err = ESP_FAIL;
-//     }
-//   } else {
-//     ESP_LOGE(TAG, "HTTP %s request failed: %s", method.c_str(),
-//              esp_err_to_name(err));
-//   }
-
-//   esp_http_client_close(client);
-//   esp_http_client_cleanup(client);
-
-//   return err;
-// }
-
-
+// Make HTTP request - Modified to check configuration  
+// Using esp_http_client with SSL certificate for HTTPS
 esp_err_t TelegramBot::makeHttpRequest(const std::string &endpoint,
                                        const std::string &method,
                                        const std::string &post_data,
                                        std::string *response) {
-    if (!isConfigured()) {
-        ESP_LOGE(TAG, "Bot not configured");
-        return ESP_ERR_INVALID_STATE;
+  if (!isConfigured()) {
+    ESP_LOGE(TAG, "Bot is not configured, cannot make HTTP request");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  char buffer[MAX_HTTP_OUTPUT_BUFFER];
+  memset(buffer, 0, sizeof(buffer));
+  std::string url = api_url_ + endpoint;
+
+  // Initialize config structure properly
+  esp_http_client_config_t config;
+  memset(&config, 0, sizeof(config));
+
+  config.url = url.c_str();
+  config.transport_type = HTTP_TRANSPORT_OVER_SSL;
+  config.event_handler = httpEventHandler;
+  config.user_data = buffer;
+  config.cert_pem = telegram_certificate_pem_start;
+  config.timeout_ms = 30000; // 30 second timeout
+
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (!client) {
+    ESP_LOGE(TAG, "Failed to initialize HTTP client");
+    return ESP_FAIL;
+  }
+
+  esp_err_t err;
+
+  if (method == "POST") {
+    err = esp_http_client_set_method(client, HTTP_METHOD_POST);
+    if (err == ESP_OK) {
+      err = esp_http_client_set_header(client, "Content-Type",
+                                       "application/json");
+    }
+    if (err == ESP_OK) {
+      err = esp_http_client_set_post_field(client, post_data.c_str(),
+                                           post_data.length());
+    }
+  } else {
+    err = esp_http_client_set_method(client, HTTP_METHOD_GET);
+  }
+
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to configure HTTP client: %s", esp_err_to_name(err));
+    esp_http_client_cleanup(client);
+    return err;
+  }
+
+  err = esp_http_client_perform(client);
+
+  if (err == ESP_OK) {
+    int status_code = esp_http_client_get_status_code(client);
+    int64_t content_length = esp_http_client_get_content_length(client);
+
+    ESP_LOGD(TAG, "HTTP %s Status = %d, content_length = %lld", method.c_str(),
+             status_code, content_length);
+
+    if (response) {
+      *response = std::string(buffer);
     }
 
-    std::string url = api_url_ + endpoint;
-    ESP_LOGI(TAG, "HTTP %s %s", method.c_str(), url.c_str());
-
-    auto network = Board::GetInstance().GetNetwork();
-    auto http = network->CreateHttp(30); // timeout 30s
-
-    if (!http->Open(method, url)) {
-        ESP_LOGE(TAG, "Failed to open connection to %s", url.c_str());
-        return ESP_FAIL;
+    if (status_code != 200) {
+      ESP_LOGW(TAG, "HTTP request failed with status %d, response: %s",
+               status_code, buffer);
+      err = ESP_FAIL;
     }
+  } else {
+    ESP_LOGE(TAG, "HTTP %s request failed: %s", method.c_str(),
+             esp_err_to_name(err));
+  }
 
-    if (method == "POST" && !post_data.empty()) {
-        http->SetHeader("Content-Type", "application/json");
-        if (!http->Write(post_data.c_str(), post_data.size())) {
-            ESP_LOGE(TAG, "Failed to send POST body");
-            http->Close();
-            return ESP_FAIL;
-        }
-    }
+  esp_http_client_close(client);
+  esp_http_client_cleanup(client);
 
-    int status = http->GetStatusCode();
-    std::string body = http->ReadAll();
-    http->Close();
-
-    if (status / 100 != 2) {
-        ESP_LOGW(TAG, "Telegram HTTP %s failed: %d\n%s",
-                 method.c_str(), status, body.c_str());
-        return ESP_FAIL;
-    }
-
-    if (response) *response = body;
-    return ESP_OK;
+  return err;
 }
 
 
