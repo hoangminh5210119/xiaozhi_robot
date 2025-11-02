@@ -93,7 +93,7 @@ void bluetooth_init() {
 #define MOTOR_BR_STEP 5
 #define MOTOR_BR_DIR 18
 
-#define MAX_SPEED 2000.0
+#define MAX_SPEED 3000.0
 #define STEPS_PER_MM 10.0
 
 #define SERVO_MIN_US 500
@@ -117,8 +117,18 @@ AccelStepper mBR(AccelStepper::DRIVER, MOTOR_BR_STEP, MOTOR_BR_DIR);
 Servo servos[4];
 bool storageStates[4] = {false, false, false, false};
 
+// Flags toggled by miscellaneous buttons (bits meaning assigned below)
+uint8_t ps2_flags = 0;
+// Flag bits mapping
+// bit0: L1, bit1: R1, bit2: L2, bit3: R2, bit4: SELECT, bit5: START
+
+// ==================== PS2 CONTROL FLAGS ====================
+// Movement direction flags (set by loop, read by TaskMotorUpdate)
+volatile int ps2_movement_dir = DIR_STOP;  // DIR_STOP, DIR_FORWARD, DIR_BACKWARD, DIR_LEFT, DIR_RIGHT
+
 bool isMoving = false;
 bool isDistanceMode = false;
+bool isPS2ControlMode = false; // true = PS2 continuous control, false = I2C timed control
 unsigned long moveStartTime = 0;
 unsigned long moveDuration = 0;
 
@@ -297,10 +307,73 @@ void moveVehicleByDistance(int dir, int speedPercent, int distance_mm) {
 
 // ==================== UPDATE MOTORS ====================
 void updateMotors() {
+  // Check if PS2 flag requests movement change
+  static int last_ps2_dir = DIR_STOP;
+  int current_ps2_dir = ps2_movement_dir;
+  
+  if (current_ps2_dir != last_ps2_dir) {
+    if (current_ps2_dir == DIR_STOP) {
+      stopVehicle();
+      isPS2ControlMode = false;
+    } else {
+      // PS2 continuous control mode - no timeout check
+      isPS2ControlMode = true;
+      isDistanceMode = false;
+      
+      float speed = MAX_SPEED;
+      enableMotors();
+
+      switch (current_ps2_dir) {
+      case DIR_FORWARD:
+        mFL.setSpeed(speed);
+        mFR.setSpeed(speed);
+        mBL.setSpeed(speed);
+        mBR.setSpeed(speed);
+        break;
+      case DIR_BACKWARD:
+        mFL.setSpeed(-speed);
+        mFR.setSpeed(-speed);
+        mBL.setSpeed(-speed);
+        mBR.setSpeed(-speed);
+        break;
+      case DIR_LEFT:
+        mFL.setSpeed(-speed);
+        mFR.setSpeed(speed);
+        mBL.setSpeed(speed);
+        mBR.setSpeed(-speed);
+        break;
+      case DIR_RIGHT:
+        mFL.setSpeed(speed);
+        mFR.setSpeed(-speed);
+        mBL.setSpeed(-speed);
+        mBR.setSpeed(speed);
+        break;
+      case DIR_ROTATE_LEFT:
+        mFL.setSpeed(-speed);
+        mFR.setSpeed(speed);
+        mBL.setSpeed(-speed);
+        mBR.setSpeed(speed);
+        break;
+      case DIR_ROTATE_RIGHT:
+        mFL.setSpeed(speed);
+        mFR.setSpeed(-speed);
+        mBL.setSpeed(speed);
+        mBR.setSpeed(-speed);
+        break;
+      }
+      
+      isMoving = true;
+      Serial.printf("🎮 PS2 Control: dir=%d | speed=%.0f (continuous)\n", current_ps2_dir, speed);
+    }
+    last_ps2_dir = current_ps2_dir;
+  }
+
+  // Continue running motors if moving
   if (!isMoving)
     return;
 
   if (isDistanceMode) {
+    // Distance-based movement (from I2C command)
     bool flDone = (mFL.distanceToGo() == 0);
     bool frDone = (mFR.distanceToGo() == 0);
     bool blDone = (mBL.distanceToGo() == 0);
@@ -315,7 +388,14 @@ void updateMotors() {
       stopVehicle();
       Serial.println("✅ Distance move complete");
     }
+  } else if (isPS2ControlMode) {
+    // PS2 continuous mode - run indefinitely until flag changes
+    mFL.runSpeed();
+    mFR.runSpeed();
+    mBL.runSpeed();
+    mBR.runSpeed();
   } else {
+    // Timed movement (from I2C command)
     mFL.runSpeed();
     mFR.runSpeed();
     mBL.runSpeed();
@@ -427,6 +507,22 @@ void processCommand(String jsonStr) {
   responseReady = true;
 }
 
+// Build response buffer in the required flat format: <conn>|<hr>|<servoStates>|<flags>
+void updateResponseBuffer() {
+  int conn = hrBle.isConnected() ? 1 : 0;
+  int hr = hrBle.getHeartRate();
+
+  // servoStates as 4 chars '0'/'1'
+  String servosStr = "";
+  for (int i = 0; i < 4; i++) {
+    servosStr += (storageStates[i] ? '1' : '0');
+  }
+
+  String resp = String(conn) + "|" + String(hr) + "|" + servosStr + "|" + String(ps2_flags);
+  responseBuffer = resp;
+  responseReady = true;
+}
+
 // ==================== I2C HANDLERS ====================
 void onI2CReceive(int bytes) {
   rxBuffer = "";
@@ -488,7 +584,7 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println(
-      "\n🚗 Xiaozhi Actuator v4.4 | Distance & Servo Smooth Control");
+      "\n🚗 Xiaozhi Actuator v4.5 | PS2 Control with Task Architecture");
 
   pinMode(LED_STATUS, OUTPUT);
   digitalWrite(LED_STATUS, LOW);
@@ -510,64 +606,78 @@ void setup() {
   Serial.println("📍 I2C Address: 0x55");
 
   ps2x.config_gamepad(PS2_CLK, PS2_CMD, PS2_SEL, PS2_DAT, pressures, rumble);
+  // Initialize response buffer for master
+  updateResponseBuffer();
 }
 
 byte vibrate = 0;
 
 void loop() {
-     ps2x.read_gamepad(false, vibrate); //read controller and set large motor to spin at 'vibrate' speed
-    
-    if(ps2x.Button(PSB_START))         //will be TRUE as long as button is pressed
-      Serial.println("Start is being held");
-    if(ps2x.Button(PSB_SELECT))
-      Serial.println("Select is being held");      
+  ps2x.read_gamepad(false, vibrate); // read controller
 
-    if(ps2x.Button(PSB_PAD_UP)) {      //will be TRUE as long as button is pressed
-      Serial.print("Up held this hard: ");
-      Serial.println(ps2x.Analog(PSAB_PAD_UP), DEC);
-    }
-    if(ps2x.Button(PSB_PAD_RIGHT)){
-      Serial.print("Right held this hard: ");
-      Serial.println(ps2x.Analog(PSAB_PAD_RIGHT), DEC);
-    }
-    if(ps2x.Button(PSB_PAD_LEFT)){
-      Serial.print("LEFT held this hard: ");
-      Serial.println(ps2x.Analog(PSAB_PAD_LEFT), DEC);
-    }
-    if(ps2x.Button(PSB_PAD_DOWN)){
-      Serial.print("DOWN held this hard: ");
-      Serial.println(ps2x.Analog(PSAB_PAD_DOWN), DEC);
-    }   
+  // 1) Set movement direction flag based on D-pad
+  if (ps2x.Button(PSB_PAD_UP)) {
+    ps2_movement_dir = DIR_FORWARD;
+  } else if (ps2x.Button(PSB_PAD_DOWN)) {
+    ps2_movement_dir = DIR_BACKWARD;
+  } else if (ps2x.Button(PSB_PAD_LEFT)) {
+    ps2_movement_dir = DIR_LEFT;
+  } else if (ps2x.Button(PSB_PAD_RIGHT)) {
+    ps2_movement_dir = DIR_RIGHT;
+  } else {
+    ps2_movement_dir = DIR_STOP;
+  }
 
-    vibrate = ps2x.Analog(PSAB_CROSS);  //this will set the large motor vibrate speed based on how hard you press the blue (X) button
-    if (ps2x.NewButtonState()) {        //will be TRUE if any button changes state (on to off, or off to on)
-      if(ps2x.Button(PSB_L3))
-        Serial.println("L3 pressed");
-      if(ps2x.Button(PSB_R3))
-        Serial.println("R3 pressed");
-      if(ps2x.Button(PSB_L2))
-        Serial.println("L2 pressed");
-      if(ps2x.Button(PSB_R2))
-        Serial.println("R2 pressed");
-      if(ps2x.Button(PSB_TRIANGLE))
-        Serial.println("Triangle pressed");        
-    }
+  // 2) Control servos directly on single press
+  if (ps2x.ButtonPressed(PSB_CROSS)) {
+    int slot = 0;
+    controlStorageDoor(slot, storageStates[slot] ? ACT_CLOSE : ACT_OPEN);
+    updateResponseBuffer();
+  }
+  if (ps2x.ButtonPressed(PSB_SQUARE)) {
+    int slot = 1;
+    controlStorageDoor(slot, storageStates[slot] ? ACT_CLOSE : ACT_OPEN);
+    updateResponseBuffer();
+  }
+  if (ps2x.ButtonPressed(PSB_TRIANGLE)) {
+    int slot = 2;
+    controlStorageDoor(slot, storageStates[slot] ? ACT_CLOSE : ACT_OPEN);
+    updateResponseBuffer();
+  }
+  if (ps2x.ButtonPressed(PSB_CIRCLE)) {
+    int slot = 3;
+    controlStorageDoor(slot, storageStates[slot] ? ACT_CLOSE : ACT_OPEN);
+    updateResponseBuffer();
+  }
 
-    if(ps2x.ButtonPressed(PSB_CIRCLE))               //will be TRUE if button was JUST pressed
-      Serial.println("Circle just pressed");
-    if(ps2x.NewButtonState(PSB_CROSS))               //will be TRUE if button was JUST pressed OR released
-      Serial.println("X just changed");
-    if(ps2x.ButtonReleased(PSB_SQUARE))              //will be TRUE if button was JUST released
-      Serial.println("Square just released");     
+  // 3) Other buttons toggle flags (flip bit on press)
+  if (ps2x.ButtonPressed(PSB_L1)) {
+    ps2_flags ^= (1 << 0);
+    updateResponseBuffer();
+  }
+  if (ps2x.ButtonPressed(PSB_R1)) {
+    ps2_flags ^= (1 << 1);
+    updateResponseBuffer();
+  }
+  if (ps2x.ButtonPressed(PSB_L2)) {
+    ps2_flags ^= (1 << 2);
+    updateResponseBuffer();
+  }
+  if (ps2x.ButtonPressed(PSB_R2)) {
+    ps2_flags ^= (1 << 3);
+    updateResponseBuffer();
+  }
+  if (ps2x.ButtonPressed(PSB_SELECT)) {
+    ps2_flags ^= (1 << 4);
+    updateResponseBuffer();
+  }
+  if (ps2x.ButtonPressed(PSB_START)) {
+    ps2_flags ^= (1 << 5);
+    updateResponseBuffer();
+  }
 
-    if(ps2x.Button(PSB_L1) || ps2x.Button(PSB_R1)) { //print stick values if either is TRUE
-      Serial.print("Stick Values:");
-      Serial.print(ps2x.Analog(PSS_LY), DEC); //Left stick, Y axis. Other options: LX, RY, RX  
-      Serial.print(",");
-      Serial.print(ps2x.Analog(PSS_LX), DEC); 
-      Serial.print(",");
-      Serial.print(ps2x.Analog(PSS_RY), DEC); 
-      Serial.print(",");
-      Serial.println(ps2x.Analog(PSS_RX), DEC); 
-    } 
+  // optional: use an analog value for vibration feedback
+  vibrate = ps2x.Analog(PSAB_CROSS);
+  
+  delay(10); // Small delay to avoid overwhelming the controller
 }
